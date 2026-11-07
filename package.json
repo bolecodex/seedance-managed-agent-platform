@@ -1,0 +1,7 @@
+{
+  "name": "visual-creation-agent-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "node server.js", "start": "node server.js", "test": "node --test tests/*.test.js", "test:browser": "node --test tests/*browser.mjs" }
+}

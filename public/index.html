@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#181917">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Visionary 视觉创作工作台，让灵感、素材和创作 Agent 连接起来。">
+  <title>Visionary · 视觉创作工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%232a2d25'/%3E%3Cpath d='m10 11 10 18 10-18h-6l-4 9-4-9z' fill='%23dbe6be'/%3E%3C/svg%3E">
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/><path d="m20 2 .6 1.4L22 4l-1.4.6L20 6l-.6-1.4L18 4l1.4-.6L20 2Z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/><path d="m14 5 5 5M10 14l1-5 7-7 4 4-7 7-5 1Z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="6" height="6" rx="1.5"/><rect x="14.5" y="3.5" width="6" height="6" rx="1.5"/><rect x="3.5" y="14.5" width="6" height="6" rx="1.5"/><rect x="14.5" y="14.5" width="6" height="6" rx="1.5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-diagonal" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6h12v12"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></symbol>
+    <symbol id="i-type" viewBox="0 0 24 24"><path d="m3 18 5-12 5 12M5 14h6M15 12c3-3 6-2 6 1v5m0-4c-6-2-8 5-2 4l2-1"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 2 3 3-1 2 3h3l1-3 3-1 2-3-2-2 1-3-2-3-3 1-2-3H9Z"/><circle cx="11.5" cy="11.5" r="3"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/></symbol>
+  </defs></svg>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <button class="sidebar-backdrop hidden" id="sidebarBackdrop" aria-label="关闭导航菜单" tabindex="-1"></button>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar" aria-label="工作空间导航">
+      <div class="sidebar-brand"><a class="brand" href="#studio" aria-label="Visionary 创作工作台"><span class="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m5 6 11 20L27 6h-7l-4 10-4-10Z" fill="currentColor"/></svg></span><span class="brand-word">visionary<span>.</span></span></a><button class="icon-button" id="sidebarToggle" aria-label="收起侧边栏" title="收起侧边栏"><svg class="icon"><use href="#i-panel"/></svg></button></div>
+      <button class="new-task-button" id="newTask" title="新建创作"><svg class="icon"><use href="#i-edit"/></svg><span class="label-text">新建创作</span><kbd>⌘ K</kbd></button>
+      <div class="sidebar-label">工作空间</div>
+      <nav aria-label="主导航">
+        <a href="#studio" data-view="studio" class="active" title="创作工作台"><svg class="icon"><use href="#i-grid"/></svg><span class="label-text">创作工作台</span><span class="active-indicator"></span></a>
+        <a href="#assets" data-view="assets" title="素材资产库"><svg class="icon"><use href="#i-folder"/></svg><span class="label-text">素材资产库</span><span class="nav-count" id="assetCount">0</span></a>
+        <a href="#history" data-view="history" title="历史任务"><svg class="icon"><use href="#i-clock"/></svg><span class="label-text">历史任务</span><span class="nav-count" id="historyCount">0</span></a>
+      </nav>
+      <section class="recent-section" aria-label="最近创作"><div class="sidebar-label">最近创作<a href="#history" title="查看全部历史任务">全部 <span>↗</span></a></div><div id="recentTasks"><p class="recent-empty">从一个想法，开始你的创作。</p></div></section>
+      <div class="sidebar-bottom">
+        <button class="workspace-switch" id="workspaceButton" title="查看工作空间配置"><span class="workspace-icon"><svg class="icon"><use href="#i-folder"/></svg></span><span class="workspace-copy"><b id="workspaceName">创作空间</b><small>个人工作空间</small></span><svg class="icon workspace-chevron"><use href="#i-chevron"/></svg></button>
+        <button class="connection" id="connectionButton" title="查看引擎连接状态"><span class="connection-dot" id="connectionDot"></span><span class="connection-copy" id="connectionText">正在连接服务</span><span class="connection-arrow">↗</span></button>
+        <a class="docs" href="https://docs.volcengine.com/docs/ark/visual-creation-agent?lang=zh" target="_blank" rel="noopener noreferrer" title="打开使用文档"><span class="label-text">使用文档</span><svg class="icon"><use href="#i-diagonal"/></svg></a>
+        <div class="profile"><span class="profile-avatar">V</span><span class="profile-copy"><b>创作者</b><small>为每一个好想法</small></span><button class="icon-button" id="settingsButton" aria-label="查看连接设置" title="连接设置"><svg class="icon"><use href="#i-settings"/></svg></button></div>
+      </div>
+    </aside>
+    <main class="main" id="main" tabindex="-1">
+      <header class="page-header"><div class="header-location"><button class="icon-button sidebar-open" id="sidebarOpen" aria-label="展开侧边栏" aria-controls="sidebar" aria-expanded="true" title="展开侧边栏"><svg class="icon"><use href="#i-panel"/></svg></button><span class="breadcrumb" id="breadcrumbName">工作空间</span><span class="header-separator">/</span><h1 id="pageTitle">新建创作</h1><p class="sr-only" id="pageDescription">今天，想创造一点什么？</p></div><div class="header-actions"><span class="local-badge"><svg class="icon"><use href="#i-lock"/></svg>本地工作空间</span><button class="icon-button" id="searchTasks" aria-label="搜索历史任务" title="搜索历史任务"><svg class="icon"><use href="#i-search"/></svg></button><span class="header-action-divider"></span><button class="preferences-toggle" id="preferencesToggle" aria-controls="preferencesPanel" aria-expanded="false"><svg class="icon"><use href="#i-sliders"/></svg><span>创作偏好</span></button><button class="icon-button theme-toggle" id="themeToggle" aria-label="切换到日间模式" title="切换到日间模式"><svg class="icon theme-icon-sun"><use href="#i-sun"/></svg><svg class="icon theme-icon-moon"><use href="#i-moon"/></svg></button><button class="icon-button hidden" id="headerNewTask" aria-label="新建创作" title="新建创作"><svg class="icon"><use href="#i-edit"/></svg></button></div></header>
+      <a class="background-task-status hidden" id="taskActivity" href="#history" aria-live="polite"></a>
+      <div class="view" id="studioView">
+        <div class="studio-primary">
+          <div class="studio-scroll" id="studioScroll">
+            <div class="studio-welcome" id="studioWelcome">
+              <section class="welcome-copy" aria-label="创意灵感"><button class="welcome-emblem" id="heroStart" aria-label="开始描述你的创意"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 7c2 15 10 23 25 25-15 2-23 10-25 25C30 42 22 34 7 32 22 30 30 22 32 7Z"/><path d="M49 5c.5 5 3.5 8 9 9-5.5 1-8.5 4-9 9-1-5-4-8-9-9 5-1 8-4 9-9Z"/></svg></button><div class="welcome-eyebrow">A SPACE FOR YOUR NEXT IDEA</div><h2>让想象，<em>有迹可循。</em></h2><p>从一句灵感，到一件作品。<br class="mobile-break">和你的视觉创作 Agent 一起开始。</p></section>
+              <section class="inspiration" aria-label="灵感模板"><div class="inspiration-heading"><span>还没想好？试试从这里开始</span><span class="inspiration-line"></span><span class="inspiration-label">灵感起点</span></div><div class="template-grid">
+                <button class="template-card" data-template="product"><span class="template-icon product-icon"><svg class="icon"><use href="#i-image"/></svg></span><span class="template-copy"><b>让产品，自带吸引力</b><small>产品主视觉 · 商业摄影</small></span><svg class="icon template-arrow"><use href="#i-diagonal"/></svg></button>
+                <button class="template-card" data-template="film"><span class="template-icon film-icon"><svg class="icon"><use href="#i-film"/></svg></span><span class="template-copy"><b>把故事，变成镜头</b><small>短片分镜 · 电影质感</small></span><svg class="icon template-arrow"><use href="#i-diagonal"/></svg></button>
+                <button class="template-card" data-template="poster"><span class="template-icon poster-icon"><svg class="icon"><use href="#i-type"/></svg></span><span class="template-copy"><b>给品牌，一点个性</b><small>创意海报 · 视觉表达</small></span><svg class="icon template-arrow"><use href="#i-diagonal"/></svg></button>
+              </div></section>
+            </div>
+            <div class="conversation hidden" id="conversation">
+              <section id="goalCard" class="goal-card hidden" aria-label="持续目标"></section>
+              <div id="messageTimeline" class="message-timeline" role="log" aria-live="polite" aria-label="会话消息"></div>
+              <div id="approvalPanel" class="approval-panel hidden" aria-label="工具确认"></div>
+              <div id="recoveryPanel" class="recovery-panel hidden" role="status"></div>
+              <div class="user-message legacy-prompt"><div id="conversationPrompt"></div><span class="user-avatar">V</span></div>
+              <div class="agent-identity"><span class="agent-avatar"><svg class="icon"><use href="#i-spark"/></svg></span><b>Visionary</b><span>你的视觉创作搭档</span></div>
+              <section class="task-panel hidden" id="progress" aria-live="polite"><div class="card-heading"><h3><span class="task-spinner" id="taskSpinner"></span><span id="statusText">正在创作</span></h3><span class="mode-badge" id="taskMode">DEMO</span></div><p id="progressDetail">正在发送创作请求…</p><div class="progress-track"><span id="progressBar"></span></div><div class="event-log" id="eventLog"></div></section>
+              <section class="result hidden" id="result"><div class="card-heading"><h3>创作交付</h3><div class="result-actions"><button id="refreshOutputs" class="hidden">刷新产物 ↻</button><button id="copyBtn">复制文本</button><button id="downloadBtn">下载方案 ↓</button></div></div><div class="result-notice hidden" id="resultNotice">这是演示方案，未调用模型，也未生成真实图片或视频。</div><h4 class="output-heading hidden" id="outputHeading">生成文件</h4><div class="output-files" id="outputFiles"></div><div class="result-content" id="resultContent"></div></section>
+            </div>
+          </div>
+          <div class="composer-dock"><div id="pendingMessages" class="pending-messages hidden" aria-label="待发送队列"></div><div id="slashCommands" class="slash-commands hidden" role="menu" aria-label="快捷命令"></div><section class="composer" id="composer" tabindex="0" aria-label="创意与参考素材" aria-describedby="mediaPasteHint"><div class="attachments" id="attachments" role="list" aria-label="参考素材"></div><label for="prompt" class="sr-only">创作需求</label><textarea id="prompt" rows="2" maxlength="2000" aria-describedby="mediaPasteHint" placeholder="描述你的想法，让我们把它变成作品…"></textarea><div class="composer-detail"><span id="mediaPasteHint">支持粘贴图片、视频、音频</span><span id="charCount">0 / 2000</span></div><div class="composer-toolbar"><div class="composer-tools"><select id="agentMode" class="agent-mode" aria-label="会话模式"><option value="agent">Agent</option><option value="plan">先制定计划</option></select><button class="icon-button upload-trigger" id="directUploadButton" aria-label="上传图片、视频或音频" title="上传图片、视频或音频"><svg class="icon"><use href="#i-plus"/></svg></button><input class="sr-only" id="composerFileInput" type="file" multiple accept="image/*,video/*,audio/*" tabindex="-1"><span class="tool-divider"></span><button class="attach-button" id="attachButton" title="从素材库添加参考"><svg class="icon"><use href="#i-folder"/></svg><span>素材库</span><span id="attachmentCount"></span></button><button class="option-summary" id="styleSummary" aria-label="调整创作风格">自然写实 <svg class="icon"><use href="#i-chevron"/></svg></button><button class="option-summary ratio-summary" id="ratioSummary" aria-label="调整画面比例">1:1</button></div><div class="composer-send"><button id="goalButton" class="icon-button" aria-label="设置持续目标" title="设置持续目标 · /goal">◎</button><button id="pauseBtn" class="pause-btn hidden" aria-label="暂停执行" title="暂停执行 · Esc">■ <span>暂停</span></button><button id="polish" class="polish-btn" aria-label="润色提示词" title="润色提示词"><svg class="icon"><use href="#i-spark"/></svg><span>润色</span></button><button class="run-btn" id="runBtn" aria-label="开始创作" title="开始创作 · ⌘ / Ctrl + Enter"><span class="sr-only">开始创作</span><svg class="icon"><use href="#i-arrow"/></svg></button></div></div></section><div class="composer-footnote"><button class="model-select" id="modeBadge" title="查看创作引擎配置"><span class="model-dot"></span><span id="modeLabel">正在连接引擎</span><svg class="icon"><use href="#i-chevron"/></svg></button><span class="composer-status" id="composerStatus">一个想法，就是一个新的开始。</span><label class="followup-label"><select id="followupMode" aria-label="运行中消息发送方式"><option value="queue">排队发送</option><option value="steer">立即引导</option></select></label><span class="keyboard-hint">Enter 发送 · Shift ↵ 换行</span></div></div>
+        </div>
+        <button class="preferences-backdrop hidden" id="preferencesBackdrop" aria-label="关闭创作偏好" tabindex="-1"></button>
+        <aside class="preferences-panel hidden" id="preferencesPanel" aria-label="创作偏好"><div class="preferences-heading"><div><svg class="icon"><use href="#i-sliders"/></svg><h2>创作偏好</h2></div><button class="icon-button" id="closePreferences" aria-label="关闭创作偏好"><svg class="icon"><use href="#i-close"/></svg></button></div><p class="preferences-intro">给灵感一点方向，其他交给想象。</p><div class="setting-label">画面比例 <span>ASPECT RATIO</span></div><div class="ratio-options" role="group" aria-label="画面比例"><button data-ratio="1:1" class="selected" aria-pressed="true"><span class="ratio-shape square"></span>1:1</button><button data-ratio="16:9" aria-pressed="false"><span class="ratio-shape landscape"></span>16:9</button><button data-ratio="9:16" aria-pressed="false"><span class="ratio-shape portrait"></span>9:16</button><button data-ratio="4:3" aria-pressed="false"><span class="ratio-shape classic"></span>4:3</button></div><div class="setting-label">创作风格 <span>VISUAL STYLE</span></div><div class="style-options" role="group" aria-label="创作风格"><button class="style active" aria-pressed="true">自然写实</button><button class="style" aria-pressed="false">电影质感</button><button class="style" aria-pressed="false">艺术插画</button><button class="style" aria-pressed="false">极简设计</button></div><div class="setting-divider"></div><div class="toggle-row"><span><b>自动优化提示词</b><small>补充构图、光影与细节表达</small></span><button class="toggle on" role="switch" aria-checked="true" aria-label="自动优化提示词" data-toggle="optimize"><i></i></button></div><div class="toggle-row"><span><b>探索多个方向</b><small>延展同一个想法的不同可能</small></span><button class="toggle" role="switch" aria-checked="false" aria-label="探索多个方向" data-toggle="versions"><i></i></button></div><button class="reset-settings" id="resetSettings">恢复默认偏好 <span>↺</span></button><div class="settings-note"><svg class="icon"><use href="#i-spark"/></svg><p>偏好为创作提供方向，<br>好想法始终拥有自由。</p></div></aside>
+      </div>
+      <div class="view hidden" id="assetsView">
+        <section class="asset-overview"><div><span class="eyebrow">YOUR CREATIVE LIBRARY</span><h2>把灵感，收进素材库。</h2><p>剧本、画面与声音，为下一次创作积累可能。</p></div><div class="library-stat"><strong id="libraryCount">0</strong><span>份创作素材</span></div></section>
+        <section class="card assets-panel"><div class="asset-tabs" role="tablist" aria-label="素材分类"><button class="upload-tab active" data-collection="virtual-avatar" role="tab" aria-selected="true">私域虚拟人像库</button><button class="upload-tab" data-collection="reference" role="tab" aria-selected="false">参考文档与素材</button></div>
+          <div class="portrait-panel hidden" id="portraitPanel">
+            <div class="portrait-heading"><div><span class="eyebrow">PRIVATE & VERIFIED</span><h3>真人素材独立入库。</h3></div><a href="https://docs.volcengine.com/docs/82379/2333589?lang=zh" target="_blank" rel="noopener noreferrer">真人库接入指南 ↗</a></div>
+            <div class="portrait-steps"><span><b>01</b> 本人 H5 活体认证</span><i>→</i><span><b>02</b> 上传同人图片 / 视频</span><i>→</i><span><b>03</b> 方舟审核后使用</span></div>
+            <p class="portrait-notice" id="portraitConfigNotice">当前工作台使用虚拟素材库，不调用真人认证接口。</p>
+            <form class="hidden" id="portraitVerificationForm"><div class="portrait-create"><label>形象名称<input name="name" maxlength="64" placeholder="例如：品牌主理人（无需真实姓名）" required></label><button class="upload-action" id="createVerification">创建本人认证链接 ↗</button></div><label class="consent-label"><input type="checkbox" name="consent" required>我确认已获肖像权人同意，由本人进入火山官方 H5 完成活体认证；本地 Demo 不收集身份证或活体视频。</label></form>
+            <details class="portrait-import"><summary>已有本人认证的真人素材组？直接复用 ↗</summary><form id="portraitImportForm"><div class="portrait-create"><label>已认证的真人 Group ID<input name="groupId" maxlength="128" placeholder="group-…（来自方舟控制台 · 真人人像）" required></label><button class="upload-action" id="importPortraitGroup">校验并导入素材组</button></div><label class="consent-label"><input type="checkbox" name="consent" required>我确认该素材组已由肖像权本人完成认证，且已获得使用和上传同人素材的授权。</label></form><p>后端会校验组类型与项目，不能用此入口绕过真人认证。复用已有组无需重新创建 H5 链接。</p></details>
+            <div id="portraitVerifications" class="portrait-verifications" aria-live="polite"></div>
+            <div class="portrait-destination"><label>上传 / 入库对应的真人素材组<select id="portraitGroup"><option value="">先完成本人认证并查询结果</option></select></label><label class="consent-label"><input id="autoEnroll" type="checkbox">上传完成后自动入库：我确认素材与所选认证人为同一人，并同意发送至方舟 Files API 临时托管及真人素材库审核。</label></div>
+            <p class="portrait-help">一组只对应一位本人。未勾选自动入库时只在本机暂存，可稍后点击素材的「提交入库」。只有 Active 状态可引用；真人素材绝不会被放入 AIGC 虚拟库。</p>
+          </div>
+          <div id="avatarUpload" class="hidden">
+            <div class="avatar-intro"><div><span class="eyebrow">PRIVATE VIRTUAL AVATAR LIBRARY</span><h3>你的角色，拥有专属素材空间。</h3><p>图片、视频与声音，在同一素材组中保持角色一致。</p></div><a href="https://docs.volcengine.com/docs/82379/2333565?lang=zh" target="_blank" rel="noopener noreferrer">使用指南 ↗</a></div>
+            <div class="avatar-workflow"><span><b>01</b> 选择角色素材组</span><i>→</i><span><b>02</b> 上传与入库</span><i>→</i><span><b>03</b> Active 后引用</span></div>
+            <div class="avatar-group-toolbar"><label>当前项目的虚拟素材组<select id="avatarGroup"><option value="">自动创建 / 复用默认素材组</option></select></label><button id="refreshAvatarGroups" class="text-button" type="button">↻ 刷新素材组</button><button id="syncAvatarAssets" class="text-button" type="button">↓ 同步云端素材</button></div>
+            <form id="avatarGroupForm" class="avatar-group-create"><input name="name" maxlength="64" placeholder="新建角色素材组，例如：星际旅人" aria-label="新素材组名称" required><button class="text-button" id="createAvatarGroup" type="submit">＋ 新建素材组</button></form>
+            <p id="avatarGroupStatus" class="avatar-group-status" role="status">正在查询虚拟素材组…</p>
+            <label class="consent-label avatar-consent"><input id="virtualConsent" type="checkbox">我确认拥有素材使用权限，素材为符合官方指南的虚拟人像及其关联素材。</label>
+            <p class="avatar-help">需开通高级创作权益包并有可用容量。图片小于 30 MB，宽高为 300–6000 px、宽高比为 0.4–2.5 的开区间；审核通过后才能用于视频生成。</p>
+            <details class="avatar-url"><summary>已有可访问的素材链接？通过 URL 入库</summary><form id="avatarForm"><div class="form-grid"><label>素材名称<input name="name" maxlength="64" placeholder="例如：虚拟角色 A · 正面" required></label><label>素材类型<select name="assetType"><option value="Image">图片 Image</option><option value="Video">视频 Video</option><option value="Audio">音频 Audio</option></select></label></div><label class="form-label">云端可访问的素材 URL<input name="assetUrl" type="url" placeholder="https://…" required></label><button class="upload-action" id="avatarSubmit">提交方舟审核 ↗</button><p id="avatarStatus" role="status"></p></form></details>
+          </div>
+          <div id="localUpload"><div class="upload-copy"><h3 id="uploadTitle">给创作一点参考</h3><p id="uploadHint">上传剧本、图片、视频或音频。同步成功的参考文件可挂载到 Agent 会话。</p></div><label class="dropzone" id="dropzone" for="fileInput"><input id="fileInput" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.jpg,.jpeg,.png,.webp,.gif,.mp4,.mov,.webm,.mp3,.wav,.m4a,.aac"><span class="upload-icon">↥</span><b>拖拽文件到这里，或 <em>浏览文件</em></b><small>PDF / DOCX / TXT / 图片 / 视频 / 音频 · 单个文件最大 512 MB</small></label><div class="selected-files" id="selectedFiles"></div><div class="upload-footer"><span id="uploadPrivacy">参考素材通过服务端同步方舟 Files API</span><button class="upload-action" id="uploadAction" disabled>上传到素材库 ↗</button></div></div>
+        </section>
+        <section class="card asset-library"><div class="library-toolbar"><h3>我的素材 <span id="filteredAssetCount">0</span></h3><div><input id="assetSearch" type="search" placeholder="搜索文件名称…" aria-label="搜索素材"><button id="refreshAssets" class="text-button">↻ 刷新</button></div></div><div id="assetList"></div></section>
+      </div>
+      <div class="view hidden" id="historyView"><section class="history-overview"><span class="eyebrow">YOUR CREATIVE JOURNEY</span><h2>每一次探索，都算数。</h2><p>回到灵感发生的地方，继续你的下一步。</p></section><section class="card history-panel"><div class="library-toolbar"><h3>全部创作 <span id="taskTotal">0</span></h3><label class="archive-filter"><input type="checkbox" id="showArchived"> 已归档</label><div class="task-search"><svg class="icon"><use href="#i-search"/></svg><input id="taskSearch" type="search" placeholder="搜索创作任务…" aria-label="搜索创作任务"></div></div><div id="historyList"></div></section><p class="view-footnote"><svg class="icon"><use href="#i-lock"/></svg>任务记录保存在当前本机</p></div>
+    </main>
+  </div>
+  <dialog id="configDialog"><div class="dialog-heading"><span class="eyebrow">CONNECTION SETTINGS</span><button id="closeConfig" aria-label="关闭连接设置">×</button></div><h2>连接你的创作引擎</h2><p>密钥仅在服务端配置。修改 <code>.env</code> 后重启生效。</p><div id="configRows"></div><div class="config-example"><b>视觉 Agent 配置</b><pre>ARK_API_KEY=你的 API Key
+ARK_AGENT_ID=已创建的 Agent ID
+ARK_ENVIRONMENT_ID=可选的 Environment ID</pre><small>也可配置 ARK_AGENT_MODEL 与 ARK_IMAGE_MODEL，由后端创建 Agent。未配置时仅展示演示方案。</small></div><a class="dialog-docs" href="https://docs.volcengine.com/docs/ark/visual-creation-agent?lang=zh" target="_blank" rel="noopener noreferrer">查看官方接入说明 ↗</a></dialog>
+  <dialog id="goalDialog" class="goal-dialog"><form id="goalForm"><div class="dialog-heading"><span class="eyebrow">PERSISTENT GOAL</span><button type="button" id="closeGoal" aria-label="关闭目标设置">×</button></div><h2>让 Agent 持续推进</h2><p>目标会随会话保存。每轮结束后继续推进，直到完成、需要你处理，或达到预算。</p><label>你想完成什么？<textarea id="goalObjective" maxlength="2000" rows="4" placeholder="描述最终结果和验收标准…" required></textarea></label><label>Token 预算（可选）<input id="goalBudget" type="number" min="1" max="10000000" step="1" placeholder="不设置额外预算"></label><p class="goal-budget-note">按云端累计用量核算，在轮次边界检查；单轮可能超出预算。不设预算时会持续推进，直到目标完成、暂停或需要你处理。</p><button type="submit" id="saveGoal" class="upload-action">设置并推进目标 ↗</button></form></dialog>
+  <dialog id="threadDialog"><form id="threadForm"><div class="dialog-heading"><span class="eyebrow">CONVERSATION</span><button type="button" id="closeThread" aria-label="关闭会话管理">×</button></div><h2>管理会话</h2><label>会话名称<input id="threadTitle" maxlength="120" required></label><div class="thread-actions"><button type="submit" class="text-button">保存名称</button><button type="button" id="pinThread" class="text-button">置顶</button><button type="button" id="archiveThread" class="text-button">归档</button><button type="button" id="deleteThread" class="text-button danger">删除本机会话</button></div><p>删除本机记录不会删除云端 Session 或文件。</p></form></dialog>
+  <div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>

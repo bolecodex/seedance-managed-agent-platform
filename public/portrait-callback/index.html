@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#f6f5f1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>真人认证返回 · Visionary</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23df744e'/%3E%3Cpath d='m10 12 10 17 10-17h-7l-3 7-3-7z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./callback.css">
+  <script src="./callback.js" defer></script>
+</head>
+<body>
+  <main class="callback-shell">
+    <a class="brand" href="http://localhost:3000/#assets" aria-label="在此设备打开 Visionary 素材库"><span class="brand-mark" aria-hidden="true">v✦</span>visionary<span>.</span></a>
+    <section class="callback-card" aria-labelledby="callbackTitle">
+      <span class="eyebrow">PRIVATE PORTRAIT · AUTHORIZATION</span>
+      <div class="status-icon" aria-hidden="true">↗</div>
+      <div role="status" aria-live="polite"><h1 id="callbackTitle">已返回认证结果页</h1><p id="callbackDescription">请回到发起认证的创作工作台，查询本人认证结果。</p><span class="result-code" id="resultCode" hidden></span></div>
+      <div class="verification-note"><span aria-hidden="true">⌁</span><p>此页仅提示 H5 返回状态。最终是否认证成功，由工作台服务端向方舟查询并校验；打开或修改此页面不能完成认证或创建真人素材组。</p></div>
+      <ol class="next-steps">
+        <li><span>01</span><div><b>回到发起认证的电脑</b><p>如果在手机上完成检测，可以关闭此页，回电脑继续。</p></div></li>
+        <li><span>02</span><div><b>进入「素材资产库 → 真人肖像库」</b><p>找到本次认证，点击「已完成 · 查询结果」。</p></div></li>
+        <li><span>03</span><div><b>确认同人素材组，再上传图片或视频</b><p>完成云端入库审核、状态为 Active 后，才能引用创作。</p></div></li>
+      </ol>
+      <a class="primary-button" href="http://localhost:3000/#assets">在此设备打开工作台 <span aria-hidden="true">↗</span></a>
+      <p class="device-hint">此按钮仅适用于运行本机 Demo 的电脑。手机请返回发起认证的电脑操作。</p>
+      <button class="copy-button" id="copyStatus">复制状态说明</button><p class="copy-status" id="copyStatusMessage" role="status" aria-live="polite"></p>
+      <noscript><p class="noscript-note">请开启 JavaScript 以隐藏回调凭证。请勿分享带完整参数的网址；直接回到工作台查询即可。</p></noscript>
+    </section>
+    <footer>YOUR IDENTITY, YOUR CREATION <span aria-hidden="true">✦</span></footer>
+  </main>
+</body>
+</html>
