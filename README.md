@@ -23,6 +23,7 @@ node server.js
 - Enter 发送，Shift+Enter 换行；运行中的补充消息可选择「排队发送」或「立即引导」。排队消息可以查看、移除，暂停期间会保留为待发送消息。
 - 点击「暂停」或按 Esc，会向 Session 发送 `user.interrupt` 并等待云端确认空闲。继续时沿用原 Session、环境和历史内容。
 - SSE 意外断开时先重新打开实时流，再分页补查 Session 历史并按事件 ID 去重。HTTP 发送结果不明确时不会自动重发；服务进程重启后会恢复原 Session 跟踪，不会创建新会话或重放已接收的消息。
+- 中断后发送追问会先恢复原 Session 并核实历史，再提交当前消息；恢复失败时保留草稿与请求标识。需要工具确认、上一条消息未发送或发送结果未知时，会显示具体操作提示；已核实的本轮中断可直接继续对话。
 - 会话支持重命名、置顶、归档、本机删除和复制。复制创建新的 Session，在原 Session 空闲时复制已有用户和 Agent 对话，不复制云端文件或工具权限确认。
 - `/` 打开命令菜单；支持 `/goal`、`/plan`、`/agent`、`/pause`、`/resume`、`/fork`、`/rename`、`/pin`、`/archive`、`/clear`、`/new`。
 - `/plan` 通过会话配置覆盖禁用服务端工具；`/agent` 通过方舟 Session upgrade 恢复原工具配置，始终使用同一 Session。切换在云端空闲时执行。
@@ -33,6 +34,14 @@ node server.js
 在空白会话设置 Goal 会以同一个原子请求创建会话及目标。活跃目标可持续驱动会话，直到 Agent 明确返回 `<<GOAL_COMPLETE>>`、`<<GOAL_BLOCKED>>`、达到可选 Token 预算、被暂停或需要工具确认。预算在轮次结束时检查，当前轮次可能超过预算；未收到可核对的方舟累计用量时会暂停 Goal 并提示检查。可编辑、暂停、恢复、标记完成或移除目标。目标只对带有该目标 ID 的 Agent 回复更新状态，避免普通追问继承旧的完成标记。
 
 演示模式不能执行持久目标，会提示需要连接已配置的 Managed Agent。目标本身和 Token 预算都会持久化；自动续跑采用服务端任务队列，并受模型与平台 Session 限制。这里的 Goal 对齐 Codex 的目标生命周期，不等于客户端提供操作系统沙箱或任意代码执行权限。
+
+## Agent 执行过程
+
+会话顶部不再展示独立的执行状态面板，包括执行阶段、连接状态、工具完成数量、累计 Token 用量及「连接与会话记录」。这些数据仍保存在本机任务中；任务执行、消息时间线、产物及工具确认照常工作。
+
+消息之间按发生顺序展示「执行过程」，包括平台公开的思考与规划、模型调用、内置工具与 MCP 工具，以及 Session 层可见的子线程状态和协作消息。工具卡片可展开查看输入、返回内容、错误、执行时间及耗时；支持文本、图片 URL、媒体与文档链接，执行计划显示待办列表。需要用户授权的工具仍须手动确认，失败工具自动展开错误详情。运行中的思考和回复通过 `event_start` / `event_delta` 实时更新，完整事件到达后替换预览。
+
+完整执行记录保存在本机任务中；刷新、重连和服务重启后继续查看，补查历史按事件 ID 去重，不重发原始需求。长工具结果只保留带截断提示的摘要，不保存内联 Base64 媒体。子线程内部的完整思考、工具结果和 Span 需要独立的 Thread Events API，当前时间线仅展示 Session 事件流实际返回的内容；平台未返回的内容不会补写为执行步骤。
 
 ## 接入真实视觉 Agent
 
@@ -50,7 +59,11 @@ node server.js
 ## 素材与人像边界
 
 - 参考素材：支持 PDF、Word、TXT、Markdown、常用图片、视频和音频，单个最大 512 MB。本机保存到 `data/uploads/`；配置 Key 后上传 Files API（`purpose=agent`）。只有成功取得文件 ID 的参考素材能挂载到真实 Agent 会话。
-- 工作台直接粘贴：点击「描述你的创意」输入框或卡片空白处，按 `⌘ V` / `Ctrl V` 粘贴剪贴板中的图片、视频或音频文件。支持多文件，自动上传到参考素材库，成功同步后自动引用；显示上传进度、失败重试与移除操作。上传未完成或存在失败素材时需先处理再开始创作。纯文字仍正常粘贴到输入框；复制的是网页链接时按文字处理，视频和音频需复制实际文件。
+- 工作台直接添加素材：将本机图片、视频或音频拖入创作输入区，出现「松开即可添加参考素材」后松开鼠标；也可点击输入框或卡片空白处，按 `⌘ V` / `Ctrl V` 粘贴剪贴板文件，或通过「＋」选择文件。支持多文件，自动上传到参考素材库，成功同步后自动引用；显示上传进度、失败重试与移除操作。上传未完成或存在失败素材时需先处理再开始创作。纯文字仍正常粘贴或拖入输入框；复制的是网页链接时按文字处理，视频和音频需复制实际文件。
+- 人像生成自动入库：配置 AK/SK 后，新会话和继续执行的旧会话均提供 `prepare_portrait_assets` 工具。本项目将真人、写实人物与虚拟 / AI 角色统一提交当前项目 `GroupType=AIGC` 素材组，复用 Files 上传并执行 `CreateAsset → GetAsset`，全部达到 `Active` 后回传 `asset://`，在同一 Session 继续生成。本地不再按真人 / 虚拟分流或要求先完成 H5 认证；`portrait_type` 可选且只记录来源，真人不会被标成 `synthetic=true`。无人场景图保持普通引用，素材编号不变。仅接受当前会话已引用的原始素材，平台审核失败如实返回，不保证所有人像都能入库。
+- 人像隐私错误续跑：视频工具返回 `InputImageSensitiveContentDetected.PrivacyInformation` 时，服务端在本轮结束后自动引导一次 AIGC 入库续跑，不通过重编码、降采样或重画角色重试原图。入库结果及资产 ID 持久化；暂停、重启或回传响应丢失时查询原资产 / 原会话，不重复创建资产或盲目重发。计划模式不提供入库工具；审核失败或权限不足时返回具体原因。
+- 人像视频生成：`generate_video_with_assets` 将已审核人物的 `asset://` 与普通场景参考图按原顺序放入 Video Generation API 的 `content.<模态>_url.url`，避免 `GenVideo.ref_images` 将 URI 当成本地路径读取。模型沿用当前 Session 的 `video_generate` 配置或 `ARK_VIDEO_MODEL`。保存云端视频任务 ID 后轮询，暂停 / 重启复用原任务；相同请求不重复创建。真实视频下载链接直接进入产物列表，Agent 随后下载到 `/mnt/session/outputs/` 并验收。
+- 消息上的「复制」同时携带提示词与引用素材。在同一工作台的其他会话或浏览器标签页粘贴时，恢复原文和素材顺序，复用已有素材，不重复上传；支持图片、视频、音频及文档引用。粘贴到其他应用时提供提示词、素材名称和可访问的本机文件链接，支持富文本的应用还可读取图片预览。已删除或暂不可引用的素材会提示重新选择；浏览器不支持富文本剪贴板时仍可在同一来源的工作台恢复引用。
 - 私域虚拟人像库：默认入口，支持本地图片、视频、音频，以及云端可访问的素材 URL。使用 `CreateAssetGroup(GroupType=AIGC) → CreateAsset → GetAsset`，不需要 H5 活体认证或公网回调地址。文档、剧本仍上传到「参考文档与素材」。
 - 服务端配置 `ARK_ACCESS_KEY` / `ARK_SECRET_KEY` 和 `ARK_PROJECT_NAME=yingke`。选择已有 AIGC 素材组或新建角色素材组；后端校验素材组类型及项目一致性。可「同步云端素材」导入该组在控制台已有的资产，支持分页。
 - 勾选虚拟素材使用权限，添加本地文件并上传：后端先保存文件，再通过 Files API 临时托管并取得签名下载地址，提交至 AIGC 素材组。无需将本机服务公开。也可展开 URL 表单直接提交素材链接。
@@ -61,7 +74,7 @@ node server.js
 
 ### 可选的真人素材接口
 
-以下兼容接口保留给明确提出真人素材入库的现有项目使用，不在当前虚拟素材工作台展示，也不是虚拟素材库的前置条件。
+以下旧版兼容接口仅在显式传入 `verificationId` 时使用，不作为当前人像创作的自动分流或前置条件。当前真人与虚拟角色均统一提交 AIGC 素材组，并以平台审核结果为准。
 
 1. 配置 `ARK_ACCESS_KEY`、`ARK_SECRET_KEY`，以及所需的高级创作权益和 `yingke` 项目的 `ArkFullAccess` 权限。API Key **不能**替代 AK/SK。
 2. 配置 `ARK_REAL_PERSON_CALLBACK_URL` 为你控制的**公网 HTTPS 回调页**，供 H5 完成后跳转。不要填写本机地址；可使用你已有的回调页面。Demo 不依赖页面传来的 `resultCode` 判成功，只以服务端查询为准。
@@ -118,18 +131,18 @@ curl -X POST http://localhost:3000/api/creative \
 | `DELETE /api/assets/:id` | 删除本机素材 / 记录 |
 | `GET /api/avatar-groups` | 查询当前项目 AIGC 素材组；可用 `nextToken` 翻页 |
 | `POST /api/avatar-groups` | `{name}` 创建角色素材组；空对象创建 / 复用默认组 |
-| `POST /api/avatar-assets` | `{name, assetUrl, assetType: "Image" / "Video" / "Audio", synthetic: true, groupId?}`，返回 202，查询素材列表跟踪异步状态 |
+| `POST /api/avatar-assets` | `{name, assetUrl, assetType: "Image" / "Video" / "Audio", consent: true, groupId?}`，返回 202，查询素材列表跟踪异步状态；兼容旧版 `synthetic: true` |
 | `POST /api/avatar-assets/sync` | `{groupId, nextToken?}` 同步当前项目云端虚拟资产，返回下一页 token |
 | `GET /api/portrait-verifications` | 当前项目真人认证记录，不返回原始 BytedToken |
 | `POST /api/portrait-verifications` | `{name, consent: true}`，创建 H5 活体认证链接 |
 | `POST /api/portrait-verifications/:id/refresh` | 服务端核验认证结果与真人素材组 |
 | `POST /api/portrait-verifications/import` | `{groupId, consent: true}`，校验并复用当前项目已认证的真人组 |
-| `POST /api/assets/:id/enroll` | 虚拟素材：`{synthetic: true, groupId?}`；兼容真人接口：`{verificationId, consent: true}`，返回 202 后查询素材列表 |
+| `POST /api/assets/:id/enroll` | 统一 AIGC 入库：`{consent: true, groupId?, portraitType?: "real" / "virtual"}`；旧版真人接口仅接受显式 `{verificationId, consent: true}`，返回 202 后查询素材列表 |
 
 任务、素材和资源 ID 持久化在 `data/`。测试可用 `VISIONARY_ENV_FILE`、`VISIONARY_DATA_DIR`、`PORT` 指向隔离环境，避免使用真实凭据或影响已有数据。
 
 ## 测试
 
-运行 `node --test tests/*.test.js`（或 `npm test`），覆盖并发队列、Seedance 多轮 Session、消息幂等、立即引导、云端暂停、重启与断线恢复、工具确认、计划模式切换、持久目标预算及会话管理。测试使用临时目录和本机模拟接口，不读取 `.env` 或调用真实模型。
+运行 `node --test tests/*.test.js`（或 `npm test`），覆盖并发队列、Seedance 多轮 Session、消息幂等、立即引导、云端暂停、重启与断线恢复、工具确认、计划模式切换、持久目标预算及会话管理。执行过程测试额外覆盖思考预览的内容块合并、完整事件替换、MCP 结果关联、执行记录持久化与恢复去重。测试使用临时目录和本机模拟接口，不读取 `.env` 或调用真实模型。
 
 浏览器回归测试使用 Playwright，可在已安装 Playwright / Chromium 的环境中运行 `npm run test:browser` 或 `node --test tests/*browser.mjs`。外部安装可通过 `VISIONARY_PLAYWRIGHT_PATH` 指定模块路径、`VISIONARY_CHROMIUM_PATH` 指定浏览器路径；可选 `VISIONARY_SCREENSHOT` 指定截图文件名前缀。覆盖 Enter/Shift+Enter、流式 Agent 回复、会话草稿、`/goal`、Esc 暂停、续跑、工具确认、会话管理及桌面/平板/移动布局。

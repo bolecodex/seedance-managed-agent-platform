@@ -8,11 +8,105 @@ const configured = ark => ({ ARK_API_KEY: 'local-test-key', ARK_AGENT_ID: 'test-
 const latest = ark => [...ark.sessions.values()].at(-1);
 const settled = (request, id, status = 'completed') => until(async () => { const { task } = await request(`/api/tasks/${id}`); return task.status === status && task; });
 
+test('accepts messages and goal descriptions longer than 2000 characters', async t => {
+  const ark = await mockArk(t);
+  const { request } = await startServer(t, configured(ark));
+  const prompt = '创作需求'.repeat(30000);
+  const objective = '持续目标'.repeat(700);
+  const { task } = await request('/api/creative', { prompt, goal: { objective } });
+
+  assert.equal(task.messages[0].text, prompt);
+  assert.equal(task.goal.objective, objective);
+  await until(() => latest(ark)?.submissions === 1);
+
+  const followUp = '后续补充'.repeat(700);
+  const queued = await request(`/api/tasks/${task.id}/messages`, { text: followUp });
+  assert.equal(queued.status, 202);
+  assert.equal(queued.task.pendingMessages[0].text, followUp);
+});
+
+for (const [name, readyChunks] of [
+  ['single-line readiness comment', [': ready\n']],
+  ['fragmented readiness comment', [': rea', 'dy\n']],
+  ['CRLF readiness comment', [': ready\r', '\n']]
+]) {
+  test(`sends after ${name} without waiting for an event separator`, async t => {
+    const ark = await mockArk(t, { readyDelay: 40, readyChunks });
+    const { request } = await startServer(t, configured(ark));
+    const { task } = await request('/api/creative', { prompt: 'Keep my message' });
+    await until(() => latest(ark)?.submissions === 1, 2000);
+    const session = latest(ark);
+    assert.equal(session.sentBeforeReady, undefined);
+    ark.finish(session);
+    const done = await settled(request, task.id);
+    assert.equal(done.messages[0].text, 'Keep my message');
+    assert.equal(done.messages[0].delivery, 'sent');
+    assert.equal(session.submissions, 1);
+    assert.equal(session.streams, 1);
+  });
+}
+
+test('failed Session creation retains the original message and explicit retry sends it once', async t => {
+  const ark = await mockArk(t, { sessionFailures: 1 });
+  const { request, dataDir } = await startServer(t, configured(ark));
+  const { task } = await request('/api/creative', { prompt: 'Original message', requestId: 'session-failure-001' });
+  const failed = await settled(request, task.id, 'failed');
+  assert.equal(failed.sessionId, undefined);
+  assert.equal(failed.messages[0].text, 'Original message');
+  assert.equal(failed.messages[0].delivery, 'queued');
+  const saved = JSON.parse(await readFile(`${dataDir}/tasks.json`, 'utf8'));
+  assert.equal(saved[0].messages[0].text, 'Original message');
+  await request(`/api/tasks/${task.id}/resume`, {});
+  await until(() => latest(ark)?.submissions === 1);
+  ark.finish(latest(ark));
+  const done = await settled(request, task.id);
+  assert.equal(done.messages.filter(item => item.role === 'user').length, 1);
+  assert.equal(latest(ark).submissions, 1);
+});
+
+test('recovery distinguishes an unsent message from an uncertain delivery and resumes the original', async t => {
+  const ark = await mockArk(t);
+  const first = await startServer(t, configured(ark));
+  const { task } = await first.request('/api/creative', { prompt: 'Unsent original' });
+  await until(() => latest(ark)?.submissions === 1);
+  const session = latest(ark);
+  const exit = once(first.child, 'exit');
+  first.child.kill('SIGTERM');
+  await exit;
+  const saved = JSON.parse(await readFile(`${first.dataDir}/tasks.json`, 'utf8'));
+  saved[0].status = 'interrupted';
+  saved[0].messages[0].delivery = 'queued';
+  saved[0].seenEventIds = [];
+  saved[0].cloudTurnOpen = false;
+  session.history = [];
+  session.status = 'idle';
+  session.submissions = 0;
+  session.messages = [];
+  await writeFile(`${first.dataDir}/tasks.json`, JSON.stringify(saved));
+  const second = await startServer(t, { ...configured(ark), VISIONARY_DATA_DIR: first.dataDir });
+  await second.request(`/api/tasks/${task.id}/recover`, {});
+  const recovered = await settled(second.request, task.id, 'interrupted');
+  assert.equal(recovered.stopReason, 'message_not_sent');
+  assert.equal(recovered.messages[0].delivery, 'queued');
+  assert.equal(session.submissions, 0);
+  const blocked = await second.request(`/api/tasks/${task.id}/messages`, { prompt: 'A follow-up must not skip the unsent original' });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.error, /上一条消息尚未发送/);
+  await second.request(`/api/tasks/${task.id}/resume`, {});
+  await until(() => session.submissions === 1);
+  assert.equal(session.messages[0].content[0].text.startsWith('Unsent original'), true);
+  ark.finish(session);
+  const done = await settled(second.request, task.id);
+  assert.equal(done.messages.filter(item => item.role === 'user').length, 1);
+  assert.equal(ark.sessions.size, 1);
+});
+
 test('reuses a Session for follow-ups, queues locally, deduplicates submissions and waits for SSE readiness', async t => {
   const ark = await mockArk(t, { readyDelay: 80 });
   const { request } = await startServer(t, configured(ark));
   const body = { prompt: 'First turn', requestId: 'request-first-001' };
   const { task } = await request('/api/creative', body);
+  assert.equal(task.messages[0].requestId, body.requestId);
   const duplicate = await request('/api/creative', body);
   assert.equal(duplicate.task.id, task.id);
   assert.equal((await request('/api/creative', { ...body, prompt: 'Different' })).status, 409);
@@ -21,6 +115,8 @@ test('reuses a Session for follow-ups, queues locally, deduplicates submissions 
   assert.equal(session.sentBeforeReady, undefined);
   const queued = await request(`/api/tasks/${task.id}/messages`, { prompt: 'Second turn', requestId: 'request-second-001' });
   assert.equal(queued.task.pendingMessages.length, 1);
+  const queuedMessage = queued.task.pendingMessages[0];
+  assert.ok(queuedMessage.timelineOrder > task.messages[0].timelineOrder);
   assert.equal(session.submissions, 1);
   await request(`/api/tasks/${task.id}/messages`, { prompt: 'Second turn', requestId: 'request-second-001' });
   ark.finish(session, false, { text: 'First answer' });
@@ -30,6 +126,8 @@ test('reuses a Session for follow-ups, queues locally, deduplicates submissions 
   assert.equal(ark.sessions.size, 1);
   assert.deepEqual(result.messages.filter(item => item.role === 'assistant').map(item => item.text), ['First answer', 'Second answer']);
   assert.equal(result.pendingMessages.length, 0);
+  assert.equal(result.messages.find(item => item.requestId === 'request-second-001').timelineOrder, queuedMessage.timelineOrder);
+  assert.ok(result.messages.find(item => item.text === 'First answer').timelineOrder > queuedMessage.timelineOrder);
   assert.equal(session.messages[1].content[0].text.startsWith('Second turn'), true);
 });
 
@@ -327,6 +425,77 @@ test('resuming a missing stop reason can send a new continuation after recovery 
   await until(() => session.submissions === 2);
   assert.ok(session.messages[1].content[0].text.includes('继续'));
   ark.finish(session); await settled(request, task.id);
+});
+
+test('a connected interrupted turn accepts an explicit follow-up on the original Session', async t => {
+  const ark = await mockArk(t);
+  const { request } = await startServer(t, configured(ark));
+  const { task } = await request('/api/creative', { prompt: 'Create a 15 second video' });
+  await until(() => latest(ark)?.submissions === 1);
+  const session = latest(ark);
+  session.status = 'idle';
+  ark.emit(session, { type: 'session.status_idle' });
+  const interrupted = await settled(request, task.id, 'interrupted');
+  assert.equal(interrupted.connection, 'connected');
+  const body = { prompt: 'Extend the video to one minute', requestId: 'connected-followup-001' };
+  assert.equal((await request(`/api/tasks/${task.id}/messages`, body)).status, 202);
+  await until(() => session.submissions === 2);
+  assert.equal((await request(`/api/tasks/${task.id}/messages`, body)).status, 202);
+  ark.finish(session);
+  const done = await settled(request, task.id);
+  assert.equal(session.submissions, 2);
+  assert.equal(ark.sessions.size, 1);
+  assert.equal(done.messages.filter(item => item.text === body.prompt).length, 1);
+});
+
+test('unknown delivery requires explicit resolution before accepting a follow-up', async t => {
+  const ark = await mockArk(t);
+  const first = await startServer(t, configured(ark));
+  const { task } = await first.request('/api/creative', { prompt: 'Uncertain original message' });
+  await until(() => latest(ark)?.submissions === 1);
+  const session = latest(ark);
+  const exited = once(first.child, 'exit');
+  first.child.kill('SIGTERM');
+  await exited;
+  const saved = JSON.parse(await readFile(`${first.dataDir}/tasks.json`, 'utf8'));
+  Object.assign(saved[0], { status: 'interrupted', connection: 'disconnected', cloudTurnOpen: false });
+  saved[0].messages[0].delivery = 'unknown';
+  session.status = 'idle';
+  session.history = [];
+  await writeFile(`${first.dataDir}/tasks.json`, JSON.stringify(saved));
+  const second = await startServer(t, { ...configured(ark), VISIONARY_DATA_DIR: first.dataDir });
+  await second.request(`/api/tasks/${task.id}/recover`, {});
+  const recovered = await settled(second.request, task.id, 'interrupted');
+  assert.equal(recovered.stopReason, 'delivery_unknown');
+  const blocked = await second.request(`/api/tasks/${task.id}/messages`, { prompt: 'Do not hide the uncertain original' });
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.error, /发送结果未确认/);
+  assert.equal(session.submissions, 1);
+});
+
+test('live running events cannot unlock sending before recovery has synchronized approval history', async t => {
+  const ark = await mockArk(t, { historyDelay: 400 });
+  const { request } = await startServer(t, configured(ark));
+  const { task } = await request('/api/creative', { prompt: 'Wait for explicit approval' });
+  await until(() => latest(ark)?.submissions === 1);
+  const session = latest(ark);
+  session.status = 'idle';
+  ark.emit(session, { type: 'session.status_idle' });
+  await settled(request, task.id, 'interrupted');
+  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: 'A product film' } });
+  ark.finish(session, false, { stopReason: 'requires_action', eventIds: [tool.id] });
+  assert.equal((await request(`/api/tasks/${task.id}/recover`, {})).status, 202);
+  const recovering = await until(async () => {
+    const { task: value } = await request(`/api/tasks/${task.id}`);
+    return value.recoveryPending && value.connection === 'connected' && value;
+  });
+  assert.equal(recovering.recoveryPending, true);
+  const blocked = await request(`/api/tasks/${task.id}/messages`, { prompt: 'Do not bypass approval' });
+  assert.equal(blocked.status, 409);
+  await settled(request, task.id, 'waiting');
+  assert.equal((await request(`/api/tasks/${task.id}`)).task.recoveryPending, false);
+  assert.equal(session.confirmations.length, 0);
+  assert.equal(session.submissions, 1);
 });
 
 test('a goal update during an unrelated turn cannot inherit an older completion marker', async t => {

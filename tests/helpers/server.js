@@ -59,8 +59,11 @@ export async function startServer(t, overrides = {}) {
   return { baseUrl, dataDir, request, child };
 }
 
-export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize = 100, postFailure = false, messageDelay = 0, sessionDelay = 0, historyDelay = 0 } = {}) {
+export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, readyChunks = [': ready\n\n'], sessionFailures = 0, pageSize = 100, postFailure = false, messageDelay = 0, sessionDelay = 0, historyDelay = 0, assetStatus = 'Active', customResultFailure = false } = {}) {
   const sessions = new Map();
+  const assets = new Map();
+  const assetRequests = [];
+  const videoRequests = [];
   let sequence = 0;
   let failedUploads = 0;
   const emit = (session, event) => {
@@ -78,7 +81,8 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize 
     const baselineAgent = { id: 'test-agent', version: 1, tools: [{ type: 'agent_toolset_20260916', default_config: { enabled: true }, configs: [{ name: 'web_search', enabled: false }] }, { type: 'agent_toolset_multimodal_20260825', default_config: { enabled: true }, configs: [{ name: 'image_generate', enabled: true }, { name: 'video_generate', enabled: true }, { name: 'visual_search', enabled: true }, { name: 'general_search', enabled: true }, { name: 'compose_video', enabled: true }] }], mcp_servers: [] };
     if (url.pathname === '/agents/test-agent' && request.method === 'GET') return json(baselineAgent);
     if (url.pathname === '/sessions' && request.method === 'POST') {
-      const session = { id: `session-${++sequence}`, title: body.title, input: body, agent: typeof body.agent === 'object' ? { ...baselineAgent, ...body.agent } : baselineAgent, status: 'idle', submissions: 0, interrupts: 0, confirmations: [], history: [], messages: [], streams: 0, upgrades: [] };
+      if (sessionFailures > 0) { sessionFailures--; return json({ error: { message: 'test session creation failed' } }, 503); }
+      const session = { id: `session-${++sequence}`, title: body.title, input: body, agent: typeof body.agent === 'object' ? { ...baselineAgent, ...body.agent } : baselineAgent, status: 'idle', submissions: 0, interrupts: 0, confirmations: [], customResults: [], history: [], messages: [], streams: 0, upgrades: [] };
       sessions.set(session.id, session);
       if (sessionDelay) await wait(sessionDelay);
       return json({ id: session.id });
@@ -90,7 +94,13 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize 
       if (match[2] === '/events/stream') {
         response.writeHead(200, { 'Content-Type': 'text/event-stream' });
         response.flushHeaders(); session.stream = response; session.streams++; session.ready = false;
-        setTimeout(() => { if (!response.destroyed) { session.ready = true; response.write(': ready\n\n'); } }, readyDelay);
+        setTimeout(async () => {
+          for (let index = 0; index < readyChunks.length && !response.destroyed; index++) {
+            if (index === readyChunks.length - 1) session.ready = true;
+            response.write(readyChunks[index]);
+            if (index < readyChunks.length - 1) await wait(10);
+          }
+        }, readyDelay);
         return;
       }
       if (match[2] === '/events' && request.method === 'GET') {
@@ -111,9 +121,13 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize 
           } else if (event.type === 'user.tool_confirmation') {
             session.confirmations.push(event); emit(session, event);
             session.status = 'running'; emit(session, { type: 'session.status_running' });
+          } else if (event.type === 'user.custom_tool_result') {
+            if (!session.ready) session.sentBeforeReady = true;
+            session.customResults.push(event); emit(session, event);
+            session.status = 'running'; emit(session, { type: 'session.status_running' });
           } else emit(session, event);
         }
-        if (postFailure) return response.destroy();
+        if (postFailure || customResultFailure && body.events?.some(event => event.type === 'user.custom_tool_result')) return response.destroy();
         return json({});
       }
       if (match[2] === '/upgrades' && request.method === 'POST') {
@@ -128,9 +142,22 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize 
       if (failedUploads < uploadFailures) { failedUploads++; return json({ error: { message: 'temporary upload failure' } }, 503); }
       return json({ id: `uploaded-file-${++sequence}` });
     }
+    if (url.pathname.startsWith('/files/')) return json({ id: url.pathname.split('/').at(-1), status: 'active', download_url: `https://files.test/${url.pathname.split('/').at(-1)}` });
+    if (url.pathname === '/contents/generations/tasks' && request.method === 'POST') { videoRequests.push(body); return json({ id: `video-test-${videoRequests.length}`, status: 'queued' }); }
+    if (url.pathname.startsWith('/contents/generations/tasks/')) return json({ id: url.pathname.split('/').at(-1), status: 'succeeded', content: { video_url: 'https://files.test/generated.mp4' } });
     if (url.pathname === '/files') {
       const id = url.searchParams.get('scope_id');
       return json({ data: [{ id: `file-${id}`, filename: `${id}.mp4`, mime_type: 'video/mp4', download_url: `https://files.test/${id}.mp4` }] });
+    }
+    const action = url.searchParams.get('Action');
+    if (action) {
+      assetRequests.push({ action, body });
+      if (['GetAssetGroup', 'CreateAssetGroup'].includes(action)) return json({ Result: { Id: body.Id || 'group-test', GroupType: 'AIGC', ProjectName: body.ProjectName, Name: body.Name || 'Test characters' } });
+      if (action === 'CreateAsset') {
+        const item = { ...body, Id: `asset-test-${assets.size + 1}`, Status: assetStatus };
+        assets.set(item.Id, item); return json({ Result: { Id: item.Id } });
+      }
+      if (action === 'GetAsset') return json({ Result: assets.get(body.Id) });
     }
     return json({ error: { message: 'not found' } }, 404);
   });
@@ -151,5 +178,5 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, pageSize 
       emit(session, { type: 'session.status_idle', stop_reason: { type: stopReason, ...(eventIds.length ? { event_ids: eventIds } : {}) } });
     }
   };
-  return { baseUrl, sessions, finish, emit };
+  return { baseUrl, sessions, assets, assetRequests, videoRequests, finish, emit };
 }

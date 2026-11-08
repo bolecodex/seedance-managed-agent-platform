@@ -8,6 +8,7 @@ import { createPortraitLibrary } from './lib/portraits.js';
 import { createAvatarLibrary } from './lib/avatars.js';
 import { createTaskQueue } from './lib/task-queue.js';
 import { createConversations } from './lib/conversations.js';
+import { createReferenceAssetTool } from './lib/reference-assets.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const envPath = process.env.VISIONARY_ENV_FILE || path.join(root, '.env');
@@ -69,7 +70,7 @@ const refreshingTasks = new Set();
 const syncingAssets = new Set();
 const subscribers = new Map();
 function publicAsset(item) {
-  const fields = ['id', 'name', 'type', 'size', 'collection', 'createdAt', 'status', 'error', 'arkFileId', 'assetId', 'remoteStatus', 'groupId', 'enrollmentState', 'project'];
+  const fields = ['id', 'name', 'type', 'size', 'collection', 'createdAt', 'status', 'error', 'arkFileId', 'assetId', 'remoteStatus', 'groupId', 'enrollmentState', 'project', 'assetGroupType', 'portraitType'];
   return { ...Object.fromEntries(fields.filter(field => item[field] !== undefined).map(field => [field, item[field]])), hasLocalFile: Boolean(item.localPath) };
 }
 const portraits = createPortraitLibrary({
@@ -87,6 +88,7 @@ const avatars = createAvatarLibrary({
     return path.join(uploadDir, item.localPath);
   }
 });
+if (ark.config.avatarLibraryConfigured) ark.managed.configureReferenceAssets(createReferenceAssetTool({ avatars, ark, getAssets: () => assets, project: ark.config.project, redact }));
 for (const item of assets) {
   if (['uploading', 'submitting'].includes(item.enrollmentState)) {
     item.enrollmentState = item.enrollmentState === 'submitting' ? 'unknown' : 'failed';
@@ -99,12 +101,12 @@ function send(response, status, body) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(body));
 }
-async function readBody(request) {
+async function readBody(request, maxBytes = 64 * 1024) {
   let size = 0;
   const chunks = [];
   for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > 64 * 1024) { request.resume(); throw httpError(413, '请求内容不能超过 64 KB'); }
+    if (size > maxBytes) { request.resume(); throw httpError(413, `请求内容不能超过 ${Math.floor(maxBytes / 1024)} KB`); }
     chunks.push(chunk);
   }
   try {
@@ -123,7 +125,7 @@ function validateOptions(value = {}) {
 }
 function updateTask(task, patch, event) {
   Object.assign(task, patch, { updatedAt: new Date().toISOString(), revision: (task.revision || 0) + 1 });
-  if (event) task.events = [...task.events.slice(-79), { ...event, at: task.updatedAt }];
+  if (event) task.events = [...task.events.slice(-79), { id: crypto.randomUUID(), detail: task.detail, ...event, at: event.at || task.updatedAt }];
   persistTasks();
   for (const response of subscribers.get(task.id) || []) {
     if (!response.destroyed && response.writableLength < 2 * 1024 * 1024) response.write(`id: ${task.revision}\nevent: task\ndata: ${JSON.stringify(task)}\n\n`);
@@ -250,7 +252,7 @@ async function refreshAvatarAssets() {
       item.remoteStatus = remote.Status || 'Processing';
       item.status = { Active: 'Active · 审核通过', Processing: 'Processing · 方舟处理中', Failed: 'Failed · 方舟审核失败' }[item.remoteStatus] || item.remoteStatus;
       delete item.error;
-      if (item.remoteStatus === 'Failed') item.error = item.collection === 'virtual-avatar' ? '方舟预处理或审核未通过，请在控制台查看虚拟素材规范与权益容量。' : '方舟预处理或安全审核未通过。真人素材须与认证基准为同一人；请在控制台查看详情。';
+      if (item.remoteStatus === 'Failed') item.error = item.assetGroupType === 'AIGC' || item.collection !== 'private-person' ? '方舟预处理或审核未通过，请在控制台查看素材规范与权益容量。' : '方舟预处理或安全审核未通过。真人素材须与认证基准为同一人；请在控制台查看详情。';
     } catch (error) { item.error = redact(error.message); }
   }));
   if (pending.length) persistAssets();
@@ -299,7 +301,8 @@ async function route(request, response) {
   if (request.method === 'POST' && enrollRoute) {
     const body = await readBody(request);
     const item = assets.find(record => record.id === enrollRoute[1]);
-    return send(response, 202, { item: publicAsset(item?.collection === 'virtual-avatar' ? avatars.submitAsset(enrollRoute[1], body) : portraits.submitAsset(enrollRoute[1], body)) });
+    const legacyVerification = item?.collection === 'private-person' && body.verificationId !== undefined;
+    return send(response, 202, { item: publicAsset(legacyVerification ? portraits.submitAsset(enrollRoute[1], body) : avatars.submitAsset(enrollRoute[1], body)) });
   }
   const assetRoute = url.pathname.match(/^\/api\/assets\/([^/]+)(\/content)?$/);
   if (assetRoute) {
@@ -347,7 +350,7 @@ async function route(request, response) {
     }
     if (request.method === 'DELETE' && action === 'messages' && controlRoute[3]) return send(response, 200, { task: conversations.removeQueued(task, controlRoute[3]) });
     if (request.method === 'POST') {
-      const body = await readBody(request);
+      const body = await readBody(request, ['messages', 'goal'].includes(action) ? Infinity : undefined);
       if (action === 'messages') return send(response, 202, { task: conversations.postMessage(task, body) });
       if (action === 'pause') return send(response, 200, { task: await conversations.pause(task) });
       if (action === 'resume' || action === 'recover') return send(response, 202, { task: conversations.resume(task, { recoverOnly: action === 'recover' }) });
@@ -379,7 +382,7 @@ async function route(request, response) {
     const task = conversations.find(taskRoute[1]);
     return send(response, 200, { task });
   }
-  if (request.method === 'POST' && ['/api/creative', '/api/conversations'].includes(url.pathname)) return send(response, 202, { task: conversations.create(await readBody(request)) });
+  if (request.method === 'POST' && ['/api/creative', '/api/conversations'].includes(url.pathname)) return send(response, 202, { task: conversations.create(await readBody(request, Infinity)) });
   if (['GET', 'HEAD'].includes(request.method) && staticFiles[url.pathname]) {
     const [filename, type] = staticFiles[url.pathname];
     const content = fs.readFileSync(path.join(root, 'public', filename));

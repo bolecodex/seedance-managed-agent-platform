@@ -20,6 +20,10 @@ test('Codex-style conversation controls, streaming, drafts, goals, recovery, app
   await page.route('https://files.test/**', route => route.fulfill({ status: 200, contentType: 'video/mp4', body: '' }));
   await page.goto(baseUrl);
   await until(() => page.locator('#connectionText').textContent().then(text => text.includes('配置就绪')));
+  const longPrompt = 'visual direction '.repeat(160);
+  await page.locator('#prompt').fill(longPrompt);
+  assert.equal((await page.locator('#prompt').inputValue()).length, longPrompt.length);
+  assert.equal(await page.locator('#charCount').textContent(), String(longPrompt.length));
   await page.locator('#prompt').fill('Create a coffee campaign');
   const accepted = page.waitForResponse(response => response.url().endsWith('/api/creative') && response.request().method() === 'POST');
   await page.locator('#prompt').press('Enter');
@@ -38,6 +42,8 @@ test('Codex-style conversation controls, streaming, drafts, goals, recovery, app
   assert.equal(session.submissions, 1);
   await page.locator('#prompt').press('Enter');
   await until(() => page.locator('#pendingMessages').textContent().then(text => text.includes('Use warm light')));
+  assert.equal(await page.locator('.chat-user .chat-message-content').last().textContent(), 'Use warm light');
+  assert.match(await page.locator('.chat-user .chat-message-heading').last().textContent(), /已排队/);
   assert.equal(session.submissions, 1);
   ark.finish(session, false, { text: 'First complete answer' });
   await until(() => session.submissions === 2);

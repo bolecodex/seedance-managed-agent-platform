@@ -84,7 +84,8 @@ test('background generation stays independent of the composer, page and selected
   await until(() => page.locator('#conversationPrompt').textContent().then(text => text === c.prompt));
   releaseOld();
   await page.unroute(`**/api/tasks/${b.id}`);
-  await until(() => page.locator('#progress').isVisible());
+  await until(() => page.locator('#conversation').isVisible());
+  assert.equal(await page.locator('#progress').isHidden(), true);
   assert.equal(await page.locator('#conversationPrompt').textContent(), c.prompt);
 
   await page.locator('#headerNewTask').click();
@@ -101,7 +102,8 @@ test('background generation stays independent of the composer, page and selected
   assert.equal(await page.locator('#prompt').inputValue(), 'Keep this draft after a background failure');
   assert.equal(await page.locator('#runBtn').isEnabled(), true);
   await page.locator(`#recentTasks [data-task="${c.id}"]`).click();
-  await until(() => page.locator('#progress').isVisible());
+  await until(() => page.locator('#conversation').isVisible());
+  assert.equal(await page.locator('#progress').isHidden(), true);
 
   // Temporary polling failure is a retryable observation problem, not task failure.
   let failPoll = true;

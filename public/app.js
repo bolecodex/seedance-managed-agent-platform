@@ -4,6 +4,7 @@ const state = { config: {}, assets: [], tasks: [], verifications: [], avatarGrou
 const activeTask = task => ['queued', 'running', 'pausing', 'recovering'].includes(task.status);
 const taskStatus = { queued: '排队中', running: '创作中', completed: '已完成', failed: '未完成', paused: '已暂停', pausing: '正在暂停', interrupted: '连接已中断', recovering: '正在恢复', waiting: '等待确认', terminated: '会话已终止' };
 const refreshingOutputs = new Set();
+const localMessages = new Map();
 let taskViewVersion = 0;
 let historyPollTimer;
 let historyRequest;
@@ -41,7 +42,20 @@ let managingTaskId;
 let draftsReady = false;
 const terminalStatus = status => ['completed', 'failed', 'paused', 'interrupted', 'waiting', 'terminated'].includes(status);
 const needsRecovery = task => Boolean(task?.sessionId && ['interrupted', 'failed'].includes(task.status) && task.connection !== 'connected');
+function messageBlockReason(task) {
+  if (!task) return '';
+  if (task.status === 'waiting') return '请先允许或拒绝待确认的工具调用，当前草稿已保留';
+  if (task.status === 'terminated') return '云端会话已终止，请新建会话后发送，当前草稿已保留';
+  if (task.status === 'pausing') return '正在暂停会话，请稍候，当前草稿已保留';
+  if (task.recoveryPending || task.status === 'recovering') return '正在恢复原会话，请稍候，当前草稿已保留';
+  if (task.status === 'interrupted' && task.connection === 'connected') {
+    if (task.stopReason === 'delivery_unknown') return '上一条消息发送结果未确认，请先核实或点击「继续执行」，当前草稿已保留';
+    if (task.stopReason === 'message_not_sent') return '上一条消息尚未发送，请先点击「继续执行」，当前草稿已保留';
+  }
+  return '';
+}
 const taskName = task => task.title || task.prompt;
+const taskStateLabel = task => task.status === 'interrupted' && task.connection === 'connected' ? task.stopReason === 'message_not_sent' ? '消息尚未发送' : '本轮已中断' : taskStatus[task.status] || '正在工作';
 const cleanAgentText = value => String(value || '').replace(/<<GOAL_(COMPLETE|BLOCKED)>>/g, '').trim();
 function storeDraft() {
   if (!draftsReady) return;
@@ -95,15 +109,232 @@ function renderMarkdown(text) {
     return escapeHtml(block).replace(/^#{1,4} (.+)$/gm, '<h4>$1</h4>').replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1 ↗</a>').replace(/\n/g, '<br>');
   }).join('');
 }
-function renderConversation(task) {
+
+const toolLabels = { image_generate: '生成图片', video_generate: '生成视频', compose_video: '合成视频', visual_search: '视觉搜索', general_search: '搜索资料', web_search: '搜索网页', web_fetch: '读取网页', todo_write: '更新执行计划', bash: '执行命令', read: '读取文件', write: '写入文件', edit: '编辑文件', glob: '查找文件', grep: '检索内容', skill: '加载技能', Skill: '加载技能' };
+const executionOpenState = new Map();
+const executionStatusLabels = { running: '执行中', completed: '已完成', failed: '失败', waiting: '等待确认', denied: '已拒绝', paused: '已暂停', interrupted: '待恢复', unconfirmed: '结果未确认', streaming: '实时更新' };
+const executionTime = value => value && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+const durationLabel = (start, end) => {
+  if (!start || !end || Number.isNaN(Date.parse(start)) || Number.isNaN(Date.parse(end))) return '';
+  const seconds = Math.max(0, (Date.parse(end) - Date.parse(start)) / 1000);
+  return seconds < 1 ? '< 1 秒' : seconds < 60 ? `${Math.round(seconds)} 秒` : `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
+};
+const usageTotal = usage => ['input_tokens', 'output_tokens', 'cache_read_input_tokens'].reduce((sum, key) => sum + (Number(usage?.[key]) || 0), 0) + Object.values(usage?.cache_creation || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+function executionStatus(step, task) {
+  if (!['running', 'streaming', 'waiting'].includes(step.status)) return step.status || 'completed';
+  if (task.pendingApprovals?.includes(step.id)) return 'waiting';
+  if (task.status === 'paused') return 'paused';
+  if (['interrupted', 'failed', 'terminated'].includes(task.status)) return 'interrupted';
+  if (task.status === 'completed') return 'unconfirmed';
+  return step.status;
+}
+function executionContent(content) {
+  if (content === undefined) return '<p class="execution-note">工具已完成，平台未返回可展示的正文。</p>';
+  if (!Array.isArray(content)) return `<pre>${escapeHtml(typeof content === 'string' ? content : JSON.stringify(content, null, 2))}</pre>`;
+  if (!content.length) return '<p class="execution-note">工具已完成，平台未返回可展示的正文。</p>';
+  return content.map(block => {
+    if (block.type === 'text') return `<div class="execution-text">${renderMarkdown(block.text || '')}</div>`;
+    if (block.type === 'search_result') {
+      const url = safeUrl(block.source);
+      return `<div class="execution-search">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(block.title || '搜索结果')} ↗</a>` : `<b>${escapeHtml(block.title || '搜索结果')}</b>`}${executionContent(block.content || [])}</div>`;
+    }
+    const source = block.source || {};
+    const url = safeUrl(source.url);
+    const label = block.title || ({ image: '图片', video: '视频', audio: '音频', document: '文档' }[block.type] || '工具产物');
+    if (url && block.type === 'image') return `<a class="execution-media" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy">${escapeHtml(label)} ↗</a>`;
+    if (url) return `<a class="execution-file" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)} ↗</a>`;
+    if (source.type === 'text') return `<div class="execution-text">${escapeHtml(source.data || '')}</div>`;
+    return `<p class="execution-note">${escapeHtml(label)}${source.file_id ? ` · ${escapeHtml(source.file_id)}` : ' · 已返回媒体内容'}</p>`;
+  }).join('');
+}
+function renderExecutionStep(step, task) {
+  const status = executionStatus(step, task);
+  const title = step.kind === 'tool' ? toolLabels[step.name] || step.name || '工具执行结果' : step.title;
+  const text = step.text || '';
+  const summary = step.kind === 'tool' ? Object.values(step.input || {}).find(value => typeof value === 'string') || '' : text;
+  const hasOutput = Object.hasOwn(step, 'output');
+  const todos = step.name === 'todo_write' && Array.isArray(step.input?.todos) ? `<ul class="execution-todos">${step.input.todos.map(item => `<li><span>${item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '◔' : '○'}</span><b>${escapeHtml(item.content || item.text || '')}</b><small>${({ completed: '已完成', in_progress: '进行中', pending: '待执行' })[item.status] || '待执行'}</small></li>`).join('')}</ul>` : '';
+  const body = step.kind === 'tool' ? `${todos}${step.input !== undefined ? `<div class="execution-section-label">输入参数</div><pre>${escapeHtml(JSON.stringify(step.input, null, 2))}</pre>` : ''}<div class="execution-section-label">${step.isError ? '错误信息' : '执行结果'}</div>${hasOutput || step.completedAt ? executionContent(step.output) : `<p class="execution-note">${status === 'waiting' ? '等待你的确认后执行。' : status === 'denied' ? '本次工具调用已拒绝。' : ['interrupted', 'paused', 'unconfirmed'].includes(status) ? '尚未收到完整工具结果，已有记录已保留。' : '工具正在执行，结果返回后会显示在这里。'}</p>`}` : text ? `<div class="execution-text">${renderMarkdown(text)}${step.status === 'streaming' ? '<span class="stream-caret"></span>' : ''}</div>` : step.kind === 'model' ? `<p class="execution-note">${step.usage ? `本次模型调用：输入 ${(step.usage.input_tokens || 0).toLocaleString()} · 输出 ${(step.usage.output_tokens || 0).toLocaleString()} tokens` : '等待模型返回结果。'}</p>` : `<p class="execution-note">${escapeHtml(step.stopReason || '会话事件已记录。')}</p>`;
+  const key = `${task.id}:${step.id}`;
+  const open = executionOpenState.get(key) ?? (step.status === 'streaming' || status === 'failed');
+  return `<details class="execution-step status-${escapeHtml(status)}" data-execution-key="${escapeHtml(key)}" data-step-id="${escapeHtml(step.id)}"${open ? ' open' : ''}><summary><span class="execution-node" aria-hidden="true">${status === 'completed' ? '✓' : status === 'failed' ? '!' : step.kind === 'tool' ? '⌘' : step.kind === 'thinking' ? '✧' : '·'}</span><span class="execution-step-heading"><b>${escapeHtml(title || '执行记录')}</b>${step.kind === 'tool' ? `<code>${escapeHtml(step.name || step.type || 'tool')}</code>` : ''}<span class="execution-snippet">${escapeHtml(String(summary).replace(/\s+/g, ' ').slice(0, 100))}</span></span><span class="execution-step-meta"><span class="execution-step-status">${executionStatusLabels[status] || status}</span><time datetime="${escapeHtml(step.createdAt || '')}">${executionTime(step.createdAt)}</time>${step.completedAt ? `<small>${durationLabel(step.createdAt, step.completedAt)}</small>` : ''}</span><svg class="icon execution-chevron"><use href="#i-chevron"/></svg></summary><div class="execution-step-body">${step.threadId ? `<p class="execution-note execution-thread">线程 ${escapeHtml(step.threadId)}${step.name && step.kind === 'thread' ? ` · ${escapeHtml(step.name)}` : ''}</p>` : ''}${step.mcpServer ? `<p class="execution-note">MCP · ${escapeHtml(step.mcpServer)}</p>` : ''}${body}</div></details>`;
+}
+// Patch only changed entries so live updates preserve focus, disclosure state and scroll.
+function reconcileExecutionGroup(node, replacement) {
+  const existing = new Map([...node.querySelectorAll('details[data-execution-key]')].map(detail => [detail.dataset.executionKey, detail]));
+  node.firstElementChild.innerHTML = replacement.firstElementChild.innerHTML;
+  let previous = node.firstElementChild;
+  for (const candidate of [...replacement.querySelectorAll('details[data-execution-key]')]) {
+    const key = candidate.dataset.executionKey;
+    const html = candidate.outerHTML;
+    let detail = existing.get(key);
+    if (!detail) detail = candidate;
+    else if (detail._renderedHtml !== html) {
+      detail.className = candidate.className;
+      detail.open = candidate.open;
+      for (const selector of ['summary', '.execution-step-body']) {
+        const current = detail.querySelector(selector), next = candidate.querySelector(selector);
+        if (current.innerHTML !== next.innerHTML) {
+          const scrollTop = current.scrollTop;
+          current.innerHTML = next.innerHTML;
+          current.scrollTop = scrollTop;
+        }
+      }
+    }
+    detail._renderedHtml = html;
+    detail.querySelector('summary').onclick = () => { executionOpenState.set(key, !detail.open); };
+    if (previous.nextElementSibling !== detail) node.insertBefore(detail, previous.nextElementSibling);
+    previous = detail; existing.delete(key);
+  }
+  for (const detail of existing.values()) detail.remove();
+}
+function reconcileTimeline(entries) {
+  const timeline = $('#messageTimeline');
+  const existing = new Map([...timeline.children].map(node => [node.dataset.timelineKey, node]));
+  let previous = null;
+  for (const { key, html } of entries) {
+    let node = existing.get(key);
+    if (!node || node._renderedHtml !== html) {
+      const template = document.createElement('template'); template.innerHTML = html;
+      const replacement = template.content.firstElementChild;
+      replacement.dataset.timelineKey = key; replacement._renderedHtml = html;
+      if (node?.classList.contains('execution-group') && replacement.classList.contains('execution-group')) {
+        reconcileExecutionGroup(node, replacement);
+        node._renderedHtml = html;
+      } else {
+        for (const detail of replacement.querySelectorAll('details[data-execution-key]')) {
+          detail._renderedHtml = detail.outerHTML;
+          detail.querySelector('summary').onclick = () => { executionOpenState.set(detail.dataset.executionKey, !detail.open); };
+        }
+        if (node) node.replaceWith(replacement);
+        node = replacement;
+      }
+    }
+    const position = previous ? previous.nextElementSibling : timeline.firstElementChild;
+    if (position !== node) timeline.insertBefore(node, position);
+    previous = node; existing.delete(key);
+  }
+  for (const node of existing.values()) node.remove();
+}
+
+function renderReferenceCards(assetIds) {
+  return assetIds.map((id, index) => {
+    const asset = state.assets.find(item => item.id === id);
+    const kind = asset?.type?.split('/')[0];
+    const label = ({ image: '图片', video: '视频', audio: '音频' })[kind] || '文档';
+    const name = asset?.name || `参考素材 ${index + 1}`;
+    const url = asset?.hasLocalFile ? `/api/assets/${encodeURIComponent(id)}/content` : null;
+    const icon = `<span class="message-asset-placeholder" aria-hidden="true"><span>${fileIcon(asset?.type)}</span><small>${asset ? label : '素材不可用'}</small></span>`;
+    const media = url && kind === 'image' ? `<img class="message-asset-media" src="${url}" alt="${escapeHtml(name)}" loading="lazy">` : url && kind === 'video' ? `<video class="message-asset-media" src="${url}" preload="metadata" muted playsinline aria-label="${escapeHtml(name)}"></video><span class="message-asset-play" aria-hidden="true">▷</span>` : '';
+    const detail = !asset ? '素材信息暂不可用' : !url ? `${label} · 仅云端素材` : `${label}${asset.size ? ` · ${formatSize(asset.size)}` : ''}`;
+    const content = `<div class="message-asset-preview">${icon}${media}<span class="message-asset-order" aria-hidden="true">${index + 1}</span></div><div class="message-asset-info"><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><small>${escapeHtml(detail)}${url ? '<span aria-hidden="true">↗</span>' : ''}</small></div>`;
+    return `<div class="message-asset${url ? '' : ' unavailable'}" role="listitem" data-reference-id="${escapeHtml(id)}">${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer" aria-label="预览参考素材 ${index + 1}：${escapeHtml(name)}">${content}</a>` : content}</div>`;
+  }).join('');
+}
+function renderMessageReferences(assetIds = []) {
+  return assetIds.length ? `<div class="message-references" role="list" aria-label="引用的参考素材">${renderReferenceCards(assetIds)}</div>` : '';
+}
+async function copyMessage(message) {
+  if (!message) return;
+  const text = message.role === 'user' ? String(message.text || '') : cleanAgentText(message.text);
+  const assetIds = [...new Set(message.assetIds || [])];
+  if (!assetIds.length) {
+    await navigator.clipboard.writeText(text);
+    try { localStorage.removeItem('visionary-copied-message'); } catch {}
+    toast('已复制消息');
+    return;
+  }
+  const payload = { version: 1, origin: location.origin, text, assetIds };
+  const references = assetIds.map((id, index) => {
+    const asset = state.assets.find(item => item.id === id);
+    return { name: asset?.name || `参考素材 ${index + 1}`, type: asset?.type, url: asset?.hasLocalFile ? new URL(`/api/assets/${encodeURIComponent(id)}/content`, location.origin).href : '' };
+  });
+  const clipboardText = `${text}\n\n[引用素材]\n${references.map((item, index) => `${index + 1}. ${item.name}${item.url ? `\n${item.url}` : ''}`).join('\n')}`;
+  const html = `<div data-visionary-message="${escapeHtml(JSON.stringify(payload))}"><div style="white-space:pre-wrap">${escapeHtml(text)}</div><ol>${references.map(item => `<li>${item.url ? `<a href="${escapeHtml(item.url)}">${item.type?.startsWith('image/') ? `<img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}" width="240"><br>` : ''}${escapeHtml(item.name)}</a>` : escapeHtml(item.name)}</li>`).join('')}</ol></div>`;
+  let richCopy = false;
+  if (navigator.clipboard.write && typeof ClipboardItem !== 'undefined') {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([clipboardText], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) })]);
+      richCopy = true;
+    } catch { /* Text and the local reference bundle still work without rich clipboard access. */ }
+  }
+  if (!richCopy) await navigator.clipboard.writeText(clipboardText);
+  // Preserve references across tabs and reloads when a browser only supports text clipboard writes.
+  try { localStorage.setItem('visionary-copied-message', JSON.stringify({ ...payload, clipboardText })); } catch {}
+  toast(`已复制提示词与 ${assetIds.length} 份引用素材`);
+}
+function copiedMessage(data) {
+  let payload;
+  try {
+    const html = data.getData('text/html');
+    const encoded = html && new DOMParser().parseFromString(html, 'text/html').querySelector('[data-visionary-message]')?.getAttribute('data-visionary-message');
+    if (encoded) payload = JSON.parse(encoded);
+    else {
+      const saved = JSON.parse(localStorage.getItem('visionary-copied-message') || 'null');
+      if (saved?.clipboardText === data.getData('text/plain')) payload = saved;
+    }
+  } catch { return null; }
+  return payload?.version === 1 && payload.origin === location.origin && typeof payload.text === 'string' && Array.isArray(payload.assetIds) && payload.assetIds.length && payload.assetIds.every(id => typeof id === 'string' && id) ? payload : null;
+}
+async function pasteMessage(payload) {
+  const prompt = $('#prompt');
+  const scope = draftScope, version = taskViewVersion;
+  prompt.setRangeText(payload.text, prompt.selectionStart, prompt.selectionEnd, 'end');
+  prompt.focus({ preventScroll: true });
+  updateCount();
+  if (payload.assetIds.some(id => !state.assets.some(item => item.id === id))) {
+    try { await refreshAssets(); } catch { /* Restore available references and report the rest below. */ }
+  }
+  if (scope !== draftScope || version !== taskViewVersion) return;
+  let unavailable = 0;
+  for (const id of new Set(payload.assetIds)) {
+    const asset = state.assets.find(item => item.id === id);
+    if (asset && selectableAsset(asset)) state.selected.add(id);
+    else unavailable++;
+  }
+  renderAssets(); renderAttachments();
+  toast(unavailable ? `已粘贴提示词，${unavailable} 份引用素材已删除或暂不可用，请重新选择` : `已粘贴提示词与 ${new Set(payload.assetIds).size} 份引用素材`, Boolean(unavailable));
+}
+$('#messageTimeline').addEventListener('error', event => {
+  if (!event.target.matches('.message-asset-media')) return;
+  event.target.classList.add('hidden');
+  event.target.parentElement.querySelector('.message-asset-placeholder small').textContent = '预览不可用';
+  event.target.parentElement.querySelector('.message-asset-play')?.classList.add('hidden');
+}, true);
+
+function renderConversation(task, { revealRequestId } = {}) {
   const scroll = $('#studioScroll');
   const nearEnd = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 160;
-  const messages = task.messages || [{ id: 'legacy-user', role: 'user', text: task.prompt }, ...(task.result ? [{ id: 'legacy-assistant', role: 'assistant', text: task.result }] : [])];
-  const visible = messages.filter(item => item.delivery !== 'cancelled' && !['queued', 'held'].includes(item.delivery));
-  $('#messageTimeline').innerHTML = visible.map(item => `<article class="chat-message ${item.role === 'user' ? 'chat-user' : 'chat-assistant'}" data-message-id="${escapeHtml(item.id)}"><div class="chat-message-heading"><b>${item.role === 'user' ? item.source === 'goal' ? '目标 · 自动继续' : '你' : task.demo ? '交互演示' : 'Seedance'}</b><small>${item.createdAt ? dateLabel(item.createdAt) : ''}${item.delivery === 'sending' ? ' · 发送中' : item.delivery === 'unknown' ? ' · 结果未确认' : item.delivery === 'failed' ? ' · 发送失败' : ''}</small><button class="message-copy" data-copy-message="${escapeHtml(item.id)}" title="复制消息">复制</button>${item.role === 'user' ? `<button class="message-copy" data-edit-message="${escapeHtml(item.id)}" title="编辑为新的补充消息">编辑</button>` : ''}</div><div class="chat-message-content">${item.role === 'user' ? escapeHtml(item.text) : renderMarkdown(item.text)}</div>${item.assetIds?.length ? `<small class="message-assets">引用 ${item.assetIds.length} 份素材</small>` : ''}</article>`).join('') + (task.streamingText ? `<article class="chat-message chat-assistant streaming"><div class="chat-message-heading"><b>Seedance</b><small>正在回复</small></div><div class="chat-message-content">${renderMarkdown(task.streamingText)}<span class="stream-caret"></span></div></article>` : '');
-  $$('[data-copy-message]').forEach(button => button.onclick = async () => { try { await navigator.clipboard.writeText(cleanAgentText(messages.find(item => item.id === button.dataset.copyMessage)?.text)); toast('已复制消息'); } catch { toast('复制失败', true); } });
-  $$('[data-edit-message]').forEach(button => button.onclick = () => { const item = messages.find(item => item.id === button.dataset.editMessage); $('#prompt').value = item.text; state.selected = new Set(item.assetIds || []); renderAttachments(); updateCount(); $('#prompt').focus(); });
+  const savedMessages = task.messages || [{ id: 'legacy-user', role: 'user', text: task.prompt, assetIds: task.assetIds || [] }, ...(task.result ? [{ id: 'legacy-assistant', role: 'assistant', text: task.result }] : [])];
+  const messages = [...savedMessages, ...[...localMessages.values()].filter(item => item.taskId === (task.id || null) && !savedMessages.some(saved => saved.requestId === item.requestId))];
   const queued = task.pendingMessages || [];
+  const queuedIds = new Set(queued.map(item => item.id));
+  const visible = messages.filter(item => item.delivery !== 'cancelled');
+  const deliveryLabels = { queued: '已保存 · 等待发送', held: '已保留 · 尚未发送', sending: '发送中', unknown: '结果未确认 · 已保存', unconfirmed: '结果未确认 · 已保存', failed: '发送失败 · 已保存', local_failed: '发送失败 · 草稿已保留' };
+  const steps = [...(task.executionSteps || [])];
+  for (const tool of task.toolCalls || []) if (!steps.some(step => step.id === tool.id)) steps.push({ ...tool, kind: 'tool' });
+  const previews = activeTask(task) ? task.streamingPreviews || [] : [];
+  for (const preview of previews) if (preview.type === 'agent.thinking' && !steps.some(step => step.id === preview.id)) steps.push({ ...preview, kind: 'thinking', title: '思考与规划', status: 'streaming' });
+  const ordered = [...visible.map(item => ({ ...item, entryType: 'message' })), ...steps.map(item => ({ ...item, entryType: 'execution' })), ...previews.filter(item => item.type === 'agent.message' && !visible.some(message => message.id === item.id)).map(item => ({ ...item, entryType: 'preview' }))].sort((a, b) => (a.timelineOrder || 0) - (b.timelineOrder || 0));
+  if (!previews.some(item => item.type === 'agent.message') && task.streamingText && activeTask(task)) ordered.push({ id: 'legacy-preview', text: task.streamingText, entryType: 'preview' });
+  const entries = [];
+  for (let index = 0; index < ordered.length; index++) {
+    const item = ordered[index];
+    if (item.entryType === 'execution') {
+      const group = [item];
+      while (ordered[index + 1]?.entryType === 'execution') group.push(ordered[++index]);
+      entries.push({ key: `execution:${item.id}`, html: `<section class="execution-group" aria-label="Agent 执行过程"><div class="execution-group-heading"><span>✧</span> 执行过程 <small>${group.length} 条记录</small></div>${group.map(step => renderExecutionStep(step, task)).join('')}</section>` });
+    } else if (item.entryType === 'preview') entries.push({ key: `message:${item.id}`, html: `<article class="chat-message chat-assistant streaming"><div class="chat-message-heading"><b>Seedance Managed Agent</b><small>正在回复</small></div><div class="chat-message-content">${renderMarkdown(item.text)}<span class="stream-caret"></span></div></article>` });
+    else {
+      const references = renderMessageReferences(item.assetIds);
+      const deliveryLabel = queuedIds.has(item.id) && item.delivery === 'queued' ? '已排队 · 当前轮次结束后发送' : deliveryLabels[item.delivery];
+      const message = `<article class="chat-message ${item.role === 'user' ? 'chat-user' : 'chat-assistant'}" data-message-id="${escapeHtml(item.id)}" data-request-id="${escapeHtml(item.requestId || '')}"><div class="chat-message-heading"><b>${item.role === 'user' ? item.source === 'goal' ? '目标 · 自动继续' : '你' : task.demo ? '交互演示' : 'Seedance Managed Agent'}</b><small>${item.createdAt ? dateLabel(item.createdAt) : ''}${deliveryLabel ? ` · ${deliveryLabel}` : ''}</small><button class="message-copy" data-copy-message="${escapeHtml(item.id)}" title="${item.assetIds?.length ? '复制提示词与引用素材' : '复制消息'}">复制</button>${item.role === 'user' ? `<button class="message-copy" data-edit-message="${escapeHtml(item.id)}" title="编辑为新的补充消息">编辑</button>` : ''}</div><div class="chat-message-content">${item.role === 'user' ? escapeHtml(item.text) : renderMarkdown(item.text)}</div>${item.assetIds?.length ? `<small class="message-assets">引用 ${item.assetIds.length} 份素材</small>` : ''}</article>`;
+      entries.push({ key: `message:${item.requestId || item.id}`, html: references ? `<div class="chat-turn${item.role === 'user' ? ' chat-turn-user' : ''}">${references}${message}</div>` : message });
+    }
+  }
+  reconcileTimeline(entries);
+  $$('[data-copy-message]').forEach(button => button.onclick = async () => { try { await copyMessage(messages.find(item => item.id === button.dataset.copyMessage)); } catch { toast('复制失败，请检查浏览器剪贴板权限', true); } });
+  $$('[data-edit-message]').forEach(button => button.onclick = () => { const item = messages.find(item => item.id === button.dataset.editMessage); $('#prompt').value = item.text; state.selected = new Set(item.assetIds || []); renderAttachments(); updateCount(); $('#prompt').focus(); });
   $('#pendingMessages').classList.toggle('hidden', !queued.length);
   $('#pendingMessages').innerHTML = queued.map(item => `<div class="pending-message"><span>↳</span><p>${escapeHtml(item.text)}</p><small>${item.delivery === 'held' ? '已保留' : '下一条'}</small><button data-remove-message="${escapeHtml(item.id)}" aria-label="移除待发送消息">×</button></div>`).join('');
   $$('[data-remove-message]').forEach(button => button.onclick = async () => {
@@ -120,7 +351,7 @@ function renderConversation(task) {
   const recoverable = ['paused', 'interrupted', 'failed', 'terminated'].includes(task.status) || task.status === 'completed' && task.goal?.status === 'active';
   $('#recoveryPanel').classList.toggle('hidden', !recoverable);
   const recoverGoal = task.status === 'completed' && task.goal?.status === 'active';
-  $('#recoveryPanel').innerHTML = recoverable ? `<div><b>${recoverGoal ? '目标尚未完成' : taskStatus[task.status] || '会话已中断'}</b><p>${escapeHtml(task.error || (recoverGoal ? '会话已完成，持续目标仍在推进。' : task.detail || '已保存会话上下文。'))}</p></div>${task.status !== 'terminated' ? `<button id="resumeTask" class="text-button">${recoverGoal ? '继续目标' : needsRecovery(task) ? '恢复会话跟踪' : '继续执行'} ↗</button>` : ''}` : '';
+  $('#recoveryPanel').innerHTML = recoverable ? `<div><b>${recoverGoal ? '目标尚未完成' : taskStateLabel(task)}</b><p>${escapeHtml(task.error ? `${task.error} 原消息与会话记录已保存在本机。` : recoverGoal ? '会话已完成，持续目标仍在推进。' : task.detail || '已保存会话上下文。')}</p></div>${task.status !== 'terminated' ? `<button id="resumeTask" class="text-button">${recoverGoal ? '继续目标' : needsRecovery(task) ? '恢复会话跟踪' : '继续执行'} ↗</button>` : ''}` : '';
   if ($('#resumeTask')) $('#resumeTask').onclick = () => controlTask(recoverGoal || needsRecovery(task) ? 'recover' : 'resume');
   $('#approvalPanel').classList.toggle('hidden', task.status !== 'waiting');
   $('#approvalPanel').innerHTML = task.status === 'waiting' ? (task.pendingApprovals || []).map(id => {
@@ -128,7 +359,15 @@ function renderConversation(task) {
     return `<div class="approval-item"><b>允许调用 ${escapeHtml(tool?.name || '工具')}？</b><pre>${escapeHtml(JSON.stringify(tool?.input || {}, null, 2))}</pre><button data-confirm="${escapeHtml(id)}" data-allow="true">允许本次</button><button data-confirm="${escapeHtml(id)}" data-allow="false">拒绝</button></div>`;
   }).join('') : '';
   $$('[data-confirm]').forEach(button => button.onclick = () => controlTask('confirm', { toolUseId: button.dataset.confirm, allow: button.dataset.allow === 'true' }));
-  if (nearEnd) requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
+  if (nearEnd || revealRequestId) {
+    const version = taskViewVersion;
+    requestAnimationFrame(() => {
+      if (version !== taskViewVersion) return;
+      const message = revealRequestId && $$('[data-request-id]').find(node => node.dataset.requestId === revealRequestId);
+      if (message) message.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+      else scroll.scrollTop = scroll.scrollHeight;
+    });
+  }
   updateComposerActions();
 }
 function taskAction(action, body = {}, id = state.activeTaskId) {
@@ -237,7 +476,7 @@ $('#showArchived').onchange = renderHistory;
 window.addEventListener('beforeunload', storeDraft);
 
 function updateCount() {
-  $('#charCount').textContent = `${$('#prompt').value.length} / 2000`;
+  $('#charCount').textContent = $('#prompt').value.length;
   $('#prompt').style.height = 'auto';
   const maximum = Number.parseFloat(getComputedStyle($('#prompt')).maxHeight) || 180;
   $('#prompt').style.height = `${Math.min(maximum, Math.max(57, $('#prompt').scrollHeight))}px`;
@@ -400,7 +639,6 @@ $('#polish').onclick = () => {
   if (!$('#prompt').value.trim()) return toast('先写下一点你的想法', true);
   const suffix = ` 画面采用${options().style}风格，重视主体层次、自然光影与留白，保留品牌识别度。`;
   if ($('#prompt').value.includes('重视主体层次')) return toast('描述已润色，可以开始创作了');
-  if ($('#prompt').value.length + suffix.length > 2000) return toast('提示词空间不足，请先精简描述', true);
   $('#prompt').value += suffix; updateCount(); toast('已本地补充风格、构图和光影描述');
 };
 function newTask() {
@@ -468,16 +706,39 @@ function displayResult(task) {
   $('#result').classList.remove('hidden');
 }
 function displayProgress(task) {
-  $('#progress').classList.remove('hidden');
   const done = task.status === 'completed'; const failed = task.status === 'failed';
+  const busy = activeTask(task);
+  const problem = ['failed', 'terminated'].includes(task.status) || task.status === 'interrupted' && task.connection !== 'connected';
   $('#progress').classList.toggle('is-complete', done);
+  $('#progress').classList.toggle('is-active', busy);
+  $('#progress').classList.toggle('has-problem', problem);
   $('#taskSpinner').classList.toggle('finished', done); $('#taskSpinner').classList.toggle('failed', failed);
   $('#statusText').textContent = failed ? '任务未完成' : done ? '创作已完成' : task.status === 'queued' ? '任务排队中 · 可继续新建' : task.demo ? '正在准备演示方案' : 'Agent 正在创作';
   $('#taskMode').textContent = task.demo ? 'DEMO · 不调用模型' : 'SEEDANCE MANAGED AGENT';
-  if (!['queued', 'running', 'completed', 'failed'].includes(task.status)) $('#statusText').textContent = taskStatus[task.status] || '正在工作';
+  if (!['queued', 'running', 'completed', 'failed'].includes(task.status)) $('#statusText').textContent = taskStateLabel(task);
   $('#progressDetail').textContent = task.error || task.detail || '正在连接创作引擎…';
-  $('#progressBar').style.width = done ? '100%' : failed ? '0%' : `${Math.min(90, 16 + (task.events?.length || 0) * 7)}%`;
-  $('#eventLog').replaceChildren(...(task.events || []).slice(-12).map(event => Object.assign(document.createElement('span'), { textContent: event.label || event.type })));
+  const events = task.events || [];
+  const sent = task.messages?.some(item => item.role === 'user' && item.delivery === 'sent');
+  const connected = task.connection === 'connected' || sent || events.some(item => item.type === 'session.connected');
+  const executing = sent || task.executionSteps?.length || task.streamingText;
+  const stage = done ? 4 : task.collectingOutputs ? 3 : executing || connected ? 2 : task.sessionId ? 1 : 0;
+  const stages = task.demo ? ['保存需求', '整理参数', '演示方案', '演示完成'] : ['准备会话', '连接事件流', 'Agent 执行', '整理产物'];
+  $('#executionStages').innerHTML = stages.map((label, index) => `<li class="${index < stage ? 'stage-done' : index === stage ? problem ? 'stage-error' : busy ? 'stage-current' : 'stage-held' : ''}"${index === stage ? ' aria-current="step"' : ''}><span>${index < stage ? '✓' : String(index + 1).padStart(2, '0')}</span>${label}</li>`).join('');
+  const connectionLabel = task.demo ? '本机演示' : { connecting: '正在连接', connected: '事件流已连接', reconnecting: '正在恢复连接', disconnected: '连接已断开' }[task.connection] || '等待连接';
+  $('#executionConnection').textContent = task.demo ? connectionLabel : !busy && connected && !problem ? '会话记录已同步' : connectionLabel;
+  $('#executionConnection').className = `connection-state ${problem ? 'connection-error' : task.connection === 'reconnecting' || task.connection === 'connecting' ? '' : connected ? 'connection-ok' : ''}`;
+  const tools = task.executionSteps?.length ? task.executionSteps.filter(item => item.kind === 'tool') : task.toolCalls || [];
+  $('#executionCounts').textContent = tools.length ? `工具 ${tools.filter(item => item.status === 'completed').length} / ${tools.length} 已完成` : task.demo ? '演示数据' : task.executionSteps?.length ? `${task.executionSteps.length} 条执行记录` : '等待执行事件';
+  $('#executionUsage').textContent = task.usage ? `累计 ${usageTotal(task.usage).toLocaleString()} tokens` : '';
+  $('#executionUsage').title = task.usage ? `输入 ${task.usage.input_tokens || 0} · 输出 ${task.usage.output_tokens || 0} · 平台累计用量快照` : '';
+  $('#executionSession').textContent = task.sessionId ? `Session · ${task.sessionId}` : task.demo ? '本机预置演示方案' : '云端会话尚未创建';
+  $('#executionEventCount').textContent = events.length ? `${events.length} 条` : '';
+  $('#eventLog').innerHTML = [...events].reverse().map(event => `<li class="${['task.error', 'session.error'].includes(event.type) ? 'event-error' : ''}"><time datetime="${escapeHtml(event.at || '')}">${executionTime(event.at)}</time><div><b>${escapeHtml(event.label || event.type)}</b>${event.detail ? `<p>${escapeHtml(event.detail)}</p>` : ''}</div></li>`).join('') || '<li><div><b>等待会话状态更新</b></div></li>';
+  const diagnostics = $('#executionDiagnostics');
+  if (diagnostics.dataset.task !== task.id) {
+    diagnostics.dataset.task = task.id || '';
+    diagnostics.open = problem && !task.executionSteps?.length;
+  }
 }
 function displayTask(task) {
   if (state.activeTaskId !== task.id) return;
@@ -492,6 +753,8 @@ function displayTask(task) {
   else { state.resultTaskId = null; $('#result').classList.add('hidden'); }
 }
 function rememberTask(task) {
+  if (task.requestId) localMessages.delete(task.requestId);
+  for (const message of task.messages || []) if (message.requestId) localMessages.delete(message.requestId);
   const index = state.tasks.findIndex(item => item.id === task.id);
   if (index < 0) state.tasks.unshift(task);
   else if ((state.tasks[index].revision || 0) <= (task.revision || 0)) state.tasks[index] = task;
@@ -501,48 +764,105 @@ function updateComposerActions() {
   const task = state.viewedTask;
   const busy = task && activeTask(task);
   const hasText = Boolean($('#prompt').value.trim());
-  const blocked = task && (['interrupted', 'recovering', 'pausing', 'waiting', 'terminated'].includes(task.status) || task.status === 'failed' && task.sessionId);
-  $('#runBtn').disabled = state.submitting || state.composerQueue.length > 0 || Boolean(blocked);
+  const blocked = messageBlockReason(task);
+  const recover = needsRecovery(task);
+  $('#runBtn').disabled = state.submitting || controlBusy || state.composerQueue.length > 0 || Boolean(blocked);
   $('#newTask').disabled = state.composerUploading; $('#headerNewTask').disabled = state.composerUploading;
-  const label = state.submitting ? '正在发送…' : state.composerQueue.length ? '请先处理参考素材' : busy ? followupSetting() === 'steer' ? '立即引导' : '排队发送' : '发送消息';
+  const label = state.submitting ? '正在发送…' : state.composerQueue.length ? '请先处理参考素材' : blocked || (recover ? '恢复会话并发送' : busy ? followupSetting() === 'steer' ? '立即引导' : '排队发送' : '发送消息');
   $('#runBtn').firstElementChild.textContent = label; $('#runBtn').setAttribute('aria-label', label); $('#runBtn').title = label;
   $('#runBtn').classList.toggle('running', state.submitting);
   $('#pauseBtn').classList.toggle('hidden', !busy); $('#pauseBtn').disabled = controlBusy || task?.status === 'pausing';
   $('#polish').classList.toggle('hidden', Boolean(busy));
   $('#prompt').placeholder = busy ? '补充指令，继续引导当前任务…' : state.activeTaskId ? '继续这段会话，或输入 / 查看命令…' : '向 Seedance 描述任务，或输入 / 查看命令…';
-  $('#composerStatus').textContent = state.submitting ? '正在保存并发送消息…' : blocked ? taskStatus[task.status] : busy ? `${followupSetting() === 'steer' ? '补充指令将交给当前云端会话' : '补充指令将在当前轮次结束后发送'} · Esc 暂停` : hasText ? 'Enter 发送 · Shift + Enter 换行' : state.activePrompt ? '会话上下文已保留，可以继续。' : '一个想法，就是一个新的开始。';
+  $('#composerStatus').textContent = state.submitting ? task?.recoveryPending || task?.status === 'recovering' ? '正在恢复原会话，草稿已保留…' : '正在保存并发送消息…' : blocked || (recover ? '发送时将先恢复原会话并核实状态，草稿会保留。' : busy ? `${followupSetting() === 'steer' ? '补充指令将交给当前云端会话' : '补充指令将在当前轮次结束后发送'} · Esc 暂停` : hasText ? 'Enter 发送 · Shift + Enter 换行' : state.activePrompt ? '会话上下文已保留，可以继续。' : '一个想法，就是一个新的开始。');
+  let notice = $('#composerRecovery');
+  if (!notice) {
+    notice = document.createElement('div'); notice.id = 'composerRecovery'; notice.className = 'composer-recovery hidden'; notice.setAttribute('role', 'status');
+    notice.append(document.createElement('span'), document.createElement('button'));
+    $('.composer-dock').prepend(notice);
+  }
+  notice.classList.toggle('hidden', !blocked && !recover);
+  notice.firstElementChild.textContent = blocked || '连接已中断，发送时会先恢复原会话并核实状态。';
+  const action = notice.lastElementChild;
+  action.className = 'text-button';
+  const unsent = task?.status === 'interrupted' && task.connection === 'connected' && task.stopReason === 'message_not_sent';
+  action.textContent = unsent ? '继续执行已保存消息 ↗' : recover ? '恢复会话 ↗' : task?.status === 'terminated' ? '新建会话 ↗' : task?.status === 'waiting' ? '查看工具确认 ↗' : '查看会话状态 ↗';
+  action.disabled = state.submitting || controlBusy;
+  action.onclick = () => unsent ? controlTask('resume') : recover ? controlTask('recover') : task?.status === 'terminated' ? newTask() : revealMessageBlock(task);
+}
+function revealMessageBlock(task) {
+  const panel = task?.status === 'waiting' ? $('#approvalPanel') : $('#recoveryPanel');
+  if (!panel.classList.contains('hidden')) {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    panel.querySelector('button')?.focus({ preventScroll: true });
+  }
+}
+async function prepareMessageTask(id, version) {
+  let { task } = await api(`/api/tasks/${encodeURIComponent(id)}`);
+  const show = () => { rememberTask(task); if (version === taskViewVersion) displayTask(task); };
+  show();
+  if (version !== taskViewVersion) return null;
+  if (needsRecovery(task)) {
+    ({ task } = await taskAction('recover', {}, id));
+    show();
+  }
+  const deadline = Date.now() + 90000;
+  while (task.recoveryPending || task.status === 'recovering') {
+    if (version !== taskViewVersion) return null;
+    if (Date.now() >= deadline) throw new Error('原会话仍在恢复，当前草稿已保留，请稍后再发送');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    if (version !== taskViewVersion) return null;
+    ({ task } = await api(`/api/tasks/${encodeURIComponent(id)}`));
+    show();
+  }
+  if (version !== taskViewVersion) return null;
+  const blocked = messageBlockReason(task);
+  if (blocked) { revealMessageBlock(task); throw new Error(blocked); }
+  if (needsRecovery(task)) throw new Error(`${task.error || '原会话恢复失败'} 当前草稿已保留，请检查连接后重试。`);
+  return task;
 }
 async function run() {
-  if (state.submitting) return;
+  if (state.submitting || controlBusy) return;
   if (state.composerQueue.length) return toast('请先等待上传完成，或处理失败素材', true);
   const prompt = $('#prompt').value.trim();
   if (!prompt) { if (activeTask(state.viewedTask || {})) return controlTask('pause'); $('#prompt').focus(); return; }
   if (await handleCommand(prompt)) return;
   const id = state.activeTaskId;
-  if (state.viewedTask && (['interrupted', 'waiting', 'terminated', 'recovering', 'pausing'].includes(state.viewedTask.status) || state.viewedTask.status === 'failed' && state.viewedTask.sessionId)) return toast('请先恢复会话或处理待确认操作', true);
+  const blocked = messageBlockReason(state.viewedTask);
+  if (blocked) { revealMessageBlock(state.viewedTask); return toast(blocked, true); }
   const version = ++taskViewVersion;
   const settings = options(); const assetIds = [...state.selected];
-  const signature = JSON.stringify({ id, prompt, settings, assetIds, mode: $('#agentMode').value, delivery: followupSetting() });
+  const mode = $('#agentMode').value; const delivery = followupSetting();
+  const signature = JSON.stringify({ id, prompt, settings, assetIds, mode, delivery });
   if (pendingSubmission?.signature !== signature) pendingSubmission = { signature, requestId: crypto.randomUUID() };
   const requestId = pendingSubmission.requestId;
   storeDraft();
   state.submitting = true; updateComposerActions();
+  const previewTask = id && state.viewedTask || { id, prompt: state.activePrompt || prompt, status: 'queued', demo: !state.config.configured, messages: [] };
+  const previousMessage = localMessages.get(requestId);
+  const timelineOrder = Math.max(previewTask?.timelineSequence || 0, ...[...(previewTask?.messages || []), ...(previewTask?.executionSteps || []), ...(previewTask?.toolCalls || []), ...(previewTask?.streamingPreviews || []), ...[...localMessages.values()].filter(item => item.taskId === id)].map(item => item.timelineOrder || 0)) + 1;
+  localMessages.set(requestId, { id: `local-${requestId}`, requestId, taskId: id, role: 'user', text: prompt, assetIds, createdAt: previousMessage?.createdAt || new Date().toISOString(), timelineOrder: previousMessage?.timelineOrder || timelineOrder, delivery: 'sending' });
   if (!id) {
     state.viewedTask = null; state.resultTaskId = null;
     beginConversation(prompt); $('#result').classList.add('hidden');
     displayProgress({ status: 'queued', demo: !state.config.configured, detail: '正在保存消息…' });
   }
+  renderConversation(previewTask, { revealRequestId: requestId });
   try {
-    const { task } = await api(id ? `/api/tasks/${encodeURIComponent(id)}/messages` : '/api/creative', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, options: settings, assetIds, requestId, mode: $('#agentMode').value, delivery: followupSetting() }) });
-    pendingSubmission = null;
+    if (id && !await prepareMessageTask(id, version)) { localMessages.delete(requestId); return; }
+    const { task } = await api(id ? `/api/tasks/${encodeURIComponent(id)}/messages` : '/api/creative', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, options: settings, assetIds, requestId, mode, delivery }) });
+    if (pendingSubmission?.requestId === requestId) pendingSubmission = null;
     if (version === taskViewVersion) {
       if ($('#prompt').value.trim() === prompt) { $('#prompt').value = ''; state.selected.clear(); storeDraft(); }
       if (!id) { switchDraft(task.id); $('#prompt').value = ''; state.selected.clear(); }
-      state.activeTaskId = task.id; state.viewedTask = null;
+      if (!id) { state.activeTaskId = task.id; state.viewedTask = null; }
       renderAttachments(); updateCount(); displayTask(task); $('#prompt').focus({ preventScroll: true });
     }
     rememberTask(task);
   } catch (error) {
+    const message = localMessages.get(requestId);
+    if (message) message.delivery = 'local_failed';
+    if (version === taskViewVersion) renderConversation(state.viewedTask || previewTask);
     if (!id && version === taskViewVersion) displayProgress({ status: 'failed', demo: !state.config.configured, error: `${error.message}。草稿已保留，重试将使用相同请求标识。` });
     toast(error.message, true);
   } finally { state.submitting = false; updateComposerActions(); refreshHistory().catch(() => {}); }
@@ -568,7 +888,7 @@ $('#downloadBtn').onclick = () => {
   const link = document.createElement('a'); link.href = url; link.download = `visionary-${new Date().toISOString().slice(0, 10)}.txt`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 function renderAttachments() {
-  const selected = state.assets.filter(item => state.selected.has(item.id)).map(item => ({ item }));
+  const selected = [...state.selected].map(id => state.assets.find(item => item.id === id)).filter(Boolean).map(item => ({ item }));
   const queued = state.composerQueue.map(upload => ({ item: upload.file, upload }));
   $('#attachments').replaceChildren(...[...selected, ...queued].map(({ item, upload }) => {
     const card = document.createElement('div'); card.className = `attachment${upload ? upload.status === 'failed' ? ' failed' : ' pending' : ''}`; card.setAttribute('role', 'listitem');
@@ -608,10 +928,10 @@ const clipboardMediaExtensions = {
 };
 function addComposerFiles(files) {
   for (let file of files) {
-    if (!file.size || file.size > 512 * 1024 * 1024) { toast(`文件需大于 0 且不超过 512 MB：${file.name || '粘贴素材'}`, true); continue; }
+    if (!file.size || file.size > 512 * 1024 * 1024) { toast(`文件需大于 0 且不超过 512 MB：${file.name || '参考素材'}`, true); continue; }
     if (!/\.(jpe?g|png|webp|gif|tiff?|heic|heif|mp4|mov|webm|mp3|wav|m4a|aac|ogg)$/i.test(file.name)) {
       const extension = clipboardMediaExtensions[file.type.toLowerCase()];
-      if (!extension) { toast(`暂不支持此粘贴格式：${file.name || file.type || '未知文件'}，请使用常用图片、视频或音频格式`, true); continue; }
+      if (!extension) { toast(`暂不支持此文件格式：${file.name || file.type || '未知文件'}，请使用常用图片、视频或音频格式`, true); continue; }
       file = new File([file], `粘贴素材-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`, { type: file.type, lastModified: file.lastModified });
     }
     if (!state.composerQueue.some(entry => entry.file.name === file.name && entry.file.size === file.size && entry.file.lastModified === file.lastModified)) {
@@ -628,7 +948,8 @@ async function processComposerUploads() {
     while ((upload = state.composerQueue.find(item => item.status === 'queued'))) {
       upload.status = 'uploading'; upload.progress = '正在上传…'; renderAttachments();
       try {
-        // Clipboard references always use Files API, independent of the library's current tab.
+        // Upload references through Files; the Agent enrolls portrait references
+        // before generation and preserves their order beside ordinary scenes.
         const item = await uploadFile(upload.file, { collection: 'reference', onProgress: message => {
           upload.progress = message;
           const status = $(`[data-upload-id="${upload.id}"]`);
@@ -666,11 +987,53 @@ $('#composer').addEventListener('click', event => {
 $('#composer').addEventListener('paste', event => {
   const data = event.clipboardData;
   if (!data) return;
+  const message = copiedMessage(data);
+  if (message) {
+    event.preventDefault();
+    pasteMessage(message).catch(() => toast('粘贴引用素材失败，请从素材库重新选择', true));
+    return;
+  }
   // Read file handles synchronously; browsers may clear clipboardData after the event.
   const files = data.files?.length ? [...data.files] : [...(data.items || [])].filter(item => item.kind === 'file').map(item => item.getAsFile()).filter(Boolean);
   if (!files.length) return;
   event.preventDefault(); addComposerFiles(files);
 });
+let composerDragDepth = 0;
+const isFileDrag = event => [...(event.dataTransfer?.types || [])].includes('Files');
+function resetComposerDrag() {
+  composerDragDepth = 0;
+  $('#composer').classList.remove('dragging');
+}
+$('#composer').addEventListener('dragenter', event => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault(); composerDragDepth++;
+  $('#composer').classList.add('dragging');
+});
+$('#composer').addEventListener('dragover', event => {
+  if (!isFileDrag(event)) return;
+  event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+});
+$('#composer').addEventListener('dragleave', () => {
+  composerDragDepth = Math.max(0, composerDragDepth - 1);
+  if (!composerDragDepth) resetComposerDrag();
+});
+$('#composer').addEventListener('drop', event => {
+  const files = [...(event.dataTransfer?.files || [])];
+  if (!files.length) return;
+  event.preventDefault(); resetComposerDrag(); addComposerFiles(files);
+});
+// Prevent files dropped outside an upload area from navigating away from the draft.
+document.addEventListener('dragover', event => {
+  if (!isFileDrag(event)) return;
+  if (!event.defaultPrevented) event.dataTransfer.dropEffect = 'none';
+  event.preventDefault();
+});
+document.addEventListener('drop', event => {
+  if (isFileDrag(event)) event.preventDefault();
+  resetComposerDrag();
+});
+document.addEventListener('dragend', resetComposerDrag);
+window.addEventListener('blur', resetComposerDrag);
 $('#directUploadButton').onclick = () => $('#composerFileInput').click();
 $('#composerFileInput').onchange = () => { addComposerFiles($('#composerFileInput').files); $('#composerFileInput').value = ''; };
 $('#attachButton').onclick = () => { location.hash = 'assets'; selectCollection('reference'); toast('选择已同步的参考素材，然后返回工作台'); };
@@ -704,17 +1067,17 @@ function selectCollection(collection) {
   const privatePerson = collection === 'private-person';
   $('#portraitPanel').classList.toggle('hidden', !privatePerson);
   $('#uploadTitle').textContent = privatePerson ? '上传本人授权的图片 / 视频' : '给创作一点参考';
-  $('#uploadHint').textContent = privatePerson ? '文件先在本机保存。选择已认证的同人素材组并明确同意后，才上传至方舟真人人像库。' : '上传剧本、图片、视频或音频。同步成功的参考文件可挂载到 Agent 会话；真人素材请使用真人肖像库。';
+  $('#uploadHint').textContent = privatePerson ? '此处保留旧版真人认证素材接口。当前人像创作统一通过 AIGC 素材库提交审核。' : '上传剧本、图片、视频或音频。同步成功的参考文件可挂载到 Agent 会话；人像会先提交 AIGC 库审核。';
   $('#uploadPrivacy').textContent = privatePerson ? '本机暂存 ≠ 云端入库，审核 Active 后才可使用' : '参考素材通过服务端同步方舟 Files API';
   $('#dropzone small').textContent = privatePerson ? '仅图片 / 视频 · 单个文件最大 512 MB · 入库前需本人认证' : 'PDF / DOCX / TXT / 图片 / 视频 / 音频 · 单个文件最大 512 MB';
   $('#fileInput').accept = privatePerson ? 'image/*,video/*' : collection === 'virtual-avatar' ? '.jpg,.jpeg,.png,.webp,.gif,.mp4,.mov,.webm,.mp3,.wav,.m4a,.aac,.ogg' : '.pdf,.doc,.docx,.txt,.md,image/*,video/*,audio/*';
   if (collection === 'virtual-avatar') {
     $('#uploadTitle').textContent = '上传角色的画面与声音';
-    $('#uploadHint').textContent = '支持本地图片、视频和音频。上传后提交至所选 AIGC 素材组，审核状态会自动更新。';
+    $('#uploadHint').textContent = '真人与虚拟角色统一提交至所选 AIGC 素材组。支持图片、视频和音频，审核通过后才能生成。';
     $('#uploadPrivacy').textContent = 'Files 临时托管 → 私域素材库审核 → Active 可引用';
     $('#dropzone small').textContent = '图片 < 30 MB · 视频 / 音频 ≤ 512 MB';
     $('#fileInput').accept = '.jpg,.jpeg,.png,.webp,.gif,.tif,.tiff,.heic,.heif,.mp4,.mov,.webm,.mp3,.wav,.m4a,.aac,.ogg';
-  } else if (collection === 'reference') $('#uploadHint').textContent = '上传参考剧本、文档、图片、视频或音频，同步成功后可挂载到 Agent 会话。';
+  } else if (collection === 'reference') $('#uploadHint').textContent = '上传参考剧本、文档、图片、视频或音频，同步成功后可挂载到 Agent 会话。人物素材生成前统一提交 AIGC 库审核。';
   renderAssets();
 }
 $$('.upload-tab').forEach(button => button.onclick = () => selectCollection(button.dataset.collection));
@@ -742,7 +1105,7 @@ function renderAssets() {
   $$('[data-enroll]').forEach(button => button.onclick = async () => {
     const item = state.assets.find(asset => asset.id === button.dataset.enroll);
     if (item.collection === 'virtual-avatar') {
-      if (!$('#virtualConsent').checked) return toast('请先确认虚拟素材使用权限', true);
+      if (!$('#virtualConsent').checked) return toast('请先确认素材使用权限与上传同意', true);
       button.disabled = true;
       try { await enrollVirtualAsset(item.id); await refreshAssets(); toast('已提交虚拟素材入库，等待方舟审核'); }
       catch (error) { toast(error.message, true); button.disabled = false; }
@@ -772,6 +1135,7 @@ async function refreshAssets() {
   state.selected.forEach(id => { if (!state.assets.some(item => item.id === id && selectableAsset(item))) state.selected.delete(id); });
   renderAssets(); renderAttachments();
   clearTimeout(assetPollTimer);
+  if (state.viewedTask) renderConversation(state.viewedTask);
   if (state.assets.some(item => item.remoteStatus === 'Processing' || ['uploading', 'submitting'].includes(item.enrollmentState))) assetPollTimer = setTimeout(() => refreshAssets().catch(error => toast(error.message, true)), 7000);
 }
 $('#assetSearch').oninput = renderAssets;
@@ -779,7 +1143,7 @@ $('#refreshAssets').onclick = () => refreshAssets().then(() => toast('素材列�
 async function enrollAsset(id, verificationId) {
   return api(`/api/assets/${encodeURIComponent(id)}/enroll`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verificationId, consent: true }) });
 }
-const virtualDestination = () => ({ synthetic: $('#virtualConsent').checked, ...($('#avatarGroup').value ? { groupId: $('#avatarGroup').value } : {}) });
+const virtualDestination = () => ({ consent: $('#virtualConsent').checked, ...($('#avatarGroup').value ? { groupId: $('#avatarGroup').value } : {}) });
 async function enrollVirtualAsset(id) {
   return api(`/api/assets/${encodeURIComponent(id)}/enroll`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(virtualDestination()) });
 }
@@ -894,7 +1258,7 @@ $('#uploadAction').onclick = async () => {
   const virtual = state.collection === 'virtual-avatar';
   const automatic = virtual || state.collection === 'private-person' && $('#autoEnroll').checked;
   const verificationId = $('#portraitGroup').value;
-  if (virtual && !$('#virtualConsent').checked) return toast('请先确认虚拟素材使用权限', true);
+  if (virtual && !$('#virtualConsent').checked) return toast('请先确认素材使用权限与上传同意', true);
   if (automatic && !virtual && !verificationId) return toast('请先完成本人认证并选择对应的素材组', true);
   if (automatic && !state.config.avatarLibraryConfigured) { openConfig(); return toast('素材入库需要 AK/SK，请先配置', true); }
   state.uploading = true; renderQueue(); const pending = [...state.queue]; const failed = []; let syncFailures = 0;
@@ -954,7 +1318,7 @@ async function openTask(id) {
     const { task } = await api(`/api/tasks/${encodeURIComponent(id)}`);
     if (version !== taskViewVersion || state.activeTaskId !== id) return;
     rememberTask(task); displayTask(task);
-    $('#progress').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    $('#conversation').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (error) {
     if (version === taskViewVersion) toast(`暂时无法读取任务：${error.message}，稍后自动重试`, true);
   } finally { refreshHistory().catch(() => {}); }
@@ -1009,12 +1373,16 @@ async function loadConfig() {
   $('#modeBadge').classList.toggle('live', config.configured);
   const rows = [['执行引擎', config.provider || 'Seedance Managed Agent', Boolean(config.configured)], ['项目', config.project || 'default', true], ['API Key', config.filesApiConfigured ? '已配置（调用时校验）' : '未配置', config.filesApiConfigured], ['视觉创作 Agent', config.configured ? '配置就绪（调用时校验）' : '缺少 Agent ID 或模型配置', config.configured], ['私域素材库 AK/SK', config.avatarLibraryConfigured ? '已配置（调用时校验权限）' : '未配置', config.avatarLibraryConfigured], ['虚拟人像素材库', config.avatarLibraryConfigured ? 'AIGC 素材组 · 支持本地文件与 URL 入库' : '待配置 AK/SK', config.avatarLibraryConfigured]];
   $('#configRows').innerHTML = rows.map(([label, value, ready]) => `<div class="config-row"><span>${escapeHtml(label)}</span><span class="${ready ? 'ready' : ''}">${escapeHtml(value)}</span></div>`).join('');
-  $('#portraitConfigNotice').textContent = !config.avatarLibraryConfigured ? '真人素材库需要独立授权；当前虚拟人像库无需本人认证或真人回调设置。' : '当前工作台接入 AIGC 私域虚拟素材组。真人肖像请另行授权并完成官方认证后再提交。';
+  $('#portraitConfigNotice').textContent = !config.avatarLibraryConfigured ? '人像入库需要配置 AK/SK；真人与虚拟角色统一走 AIGC 库审核。' : '当前人像创作统一使用 AIGC 素材组，不按真人或虚拟角色分流；平台审核 Active 后生成。';
   renderAssets();
 }
 showView();
 selectCollection('virtual-avatar');
-Promise.all([loadConfig().then(refreshAvatarGroups), refreshAssets(), refreshHistory()]).then(async () => {
+Promise.allSettled([
+  loadConfig().then(() => { refreshAvatarGroups().catch(error => { $('#avatarGroupStatus').textContent = `素材组暂时无法同步：${error.message}`; }); }).catch(error => { $('#connectionText').textContent = '服务连接异常'; $('#connectionDot').classList.add('offline'); toast(error.message, true); }),
+  refreshAssets().catch(error => toast(`素材库暂时无法同步：${error.message}`, true)),
+  refreshHistory().catch(error => toast(`会话列表暂时无法同步：${error.message}`, true))
+]).then(async () => {
   let id; try { id = localStorage.getItem('visionary-active-task'); } catch {}
   if (id && state.tasks.some(item => item.id === id) && !state.activeTaskId && ['', '#studio'].includes(location.hash)) await openTask(id);
-}).catch(error => { $('#connectionText').textContent = '服务连接异常'; $('#connectionDot').classList.add('offline'); toast(error.message, true); });
+}).catch(error => toast(error.message, true));
