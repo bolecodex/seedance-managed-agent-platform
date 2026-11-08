@@ -64,6 +64,7 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, readyChun
   const assets = new Map();
   const assetRequests = [];
   const videoRequests = [];
+  const imageRequests = [];
   let sequence = 0;
   let failedUploads = 0;
   const emit = (session, event) => {
@@ -144,6 +145,7 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, readyChun
     }
     if (url.pathname.startsWith('/files/')) return json({ id: url.pathname.split('/').at(-1), status: 'active', download_url: `https://files.test/${url.pathname.split('/').at(-1)}` });
     if (url.pathname === '/contents/generations/tasks' && request.method === 'POST') { videoRequests.push(body); return json({ id: `video-test-${videoRequests.length}`, status: 'queued' }); }
+    if (url.pathname === '/images/generations' && request.method === 'POST') { imageRequests.push(body); return json({ data: [{ url: 'https://files.test/generated.jpg' }] }); }
     if (url.pathname.startsWith('/contents/generations/tasks/')) return json({ id: url.pathname.split('/').at(-1), status: 'succeeded', content: { video_url: 'https://files.test/generated.mp4' } });
     if (url.pathname === '/files') {
       const id = url.searchParams.get('scope_id');
@@ -178,5 +180,5 @@ export async function mockArk(t, { uploadFailures = 0, readyDelay = 0, readyChun
       emit(session, { type: 'session.status_idle', stop_reason: { type: stopReason, ...(eventIds.length ? { event_ids: eventIds } : {}) } });
     }
   };
-  return { baseUrl, sessions, assets, assetRequests, videoRequests, finish, emit };
+  return { baseUrl, sessions, assets, assetRequests, videoRequests, imageRequests, finish, emit };
 }

@@ -29,7 +29,7 @@ test('asset video requests preserve reference order, project validation and requ
     { type: 'text', text: input.prompt },
     { type: 'image_url', image_url: { url: 'https://files.test/room.png' }, role: 'reference_image' },
     { type: 'image_url', image_url: { url: 'asset://person-asset' }, role: 'reference_image' }
-  ], duration: 30, ratio: '9:16', resolution: '720p', generate_audio: true, watermark: true });
+  ], duration: 30, ratio: '9:16', resolution: '720p', generate_audio: true, watermark: false });
   const again = await generateAssetVideo({ ark, task, callId: 'call2', input, items, progress() {}, signal: new AbortController().signal });
   assert.equal(again.task_id, result.task_id);
   assert.equal(requests.length, 1);

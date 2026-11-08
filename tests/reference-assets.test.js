@@ -59,6 +59,7 @@ test('enrolls portrait references before resuming the same session, preserving m
   assert.equal(ark.videoRequests[0].content[1].image_url.url, `https://files.test/${room.arkFileId}`);
   assert.equal(ark.videoRequests[0].content[2].image_url.url, 'asset://asset-test-1');
   assert.equal(ark.videoRequests[0].duration, 30);
+  assert.equal(ark.videoRequests[0].watermark, false);
   ark.finish(session);
   await until(async () => (await request(`/api/tasks/${task.id}`)).task.status === 'completed');
   const done = (await request(`/api/tasks/${task.id}`)).task;

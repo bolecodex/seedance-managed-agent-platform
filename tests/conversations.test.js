@@ -3,6 +3,7 @@ import test from 'node:test';
 import { once } from 'node:events';
 import { readFile, writeFile } from 'node:fs/promises';
 import { startServer, mockArk, until } from './helpers/server.js';
+import { generationInstructions } from '../lib/generation-policy.js';
 
 const configured = ark => ({ ARK_API_KEY: 'local-test-key', ARK_AGENT_ID: 'test-agent', ARK_ENVIRONMENT_ID: 'test-environment', ARK_BASE_URL: ark.baseUrl });
 const latest = ark => [...ark.sessions.values()].at(-1);
@@ -113,6 +114,7 @@ test('reuses a Session for follow-ups, queues locally, deduplicates submissions 
   await until(() => latest(ark)?.submissions === 1);
   const session = latest(ark);
   assert.equal(session.sentBeforeReady, undefined);
+  assert.ok(session.message.events.at(-1).content[0].text.includes(generationInstructions));
   const queued = await request(`/api/tasks/${task.id}/messages`, { prompt: 'Second turn', requestId: 'request-second-001' });
   assert.equal(queued.task.pendingMessages.length, 1);
   const queuedMessage = queued.task.pendingMessages[0];
@@ -121,6 +123,7 @@ test('reuses a Session for follow-ups, queues locally, deduplicates submissions 
   await request(`/api/tasks/${task.id}/messages`, { prompt: 'Second turn', requestId: 'request-second-001' });
   ark.finish(session, false, { text: 'First answer' });
   await until(() => session.submissions === 2);
+  assert.ok(session.message.events.at(-1).content[0].text.includes(generationInstructions));
   ark.finish(session, false, { text: 'Second answer' });
   const result = await settled(request, task.id);
   assert.equal(ark.sessions.size, 1);
@@ -236,7 +239,7 @@ test('requires_action waits for explicit tool confirmation before continuing', a
   const { task } = await request('/api/creative', { prompt: 'Confirm a tool' });
   await until(() => latest(ark)?.submissions === 1);
   const session = latest(ark);
-  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: 'A scene' } });
+  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'Skill', input: { skill: 'video-producer' } });
   ark.finish(session, false, { text: 'Please approve', stopReason: 'requires_action', eventIds: [tool.id] });
   await settled(request, task.id, 'waiting');
   assert.equal((await request(`/api/tasks/${task.id}/messages`, { text: 'Skip approval' })).status, 409);
@@ -264,6 +267,7 @@ test('persistent goals continue on the same Session and stop on completion or bu
   const events = session.message.events;
   assert.equal(events.at(-1).type, 'system.message');
   assert.ok(events.at(-1).content[0].text.includes('Finish the full video'));
+  assert.ok(events.at(-1).content[0].text.includes(generationInstructions));
   ark.finish(session, false, { text: 'Verified everything\n<<GOAL_COMPLETE>>', usage: { input_tokens: 200, output_tokens: 100 } });
   let done = await settled(request, task.id);
   assert.equal(done.goal.status, 'complete');
@@ -303,6 +307,7 @@ test('recovering a completed conversation resumes its active goal on the origina
   await until(() => session.submissions === 2);
   assert.equal(ark.sessions.size, 1);
   assert.equal(session.messages[1].content[0].text.startsWith('继续推进已设定的持续目标'), true);
+  assert.ok(session.message.events.at(-1).content[0].text.includes(generationInstructions));
   assert.equal(session.submissions, 2);
   ark.finish(session, false, { text: 'Campaign complete\n<<GOAL_COMPLETE>>', usage: { input_tokens: 200, output_tokens: 100 } });
   const done = await settled(second.request, task.id);
@@ -353,6 +358,9 @@ test('creating a goal is atomic, plan mode disables cloud tools, and Agent mode 
   assert.equal(session.upgrades.length, 1);
   assert.equal(session.upgrades[0].agent.type, 'agent_with_upgrades');
   assert.equal(session.upgrades[0].agent.tools[1].configs[1].name, 'video_generate');
+  assert.equal(session.upgrades[0].agent.tools[1].configs[1].enabled, false);
+  assert.ok(session.upgrades[0].agent.tools.some(tool => tool.name === 'generate_image_without_watermark'));
+  assert.ok(session.upgrades[0].agent.tools.some(tool => tool.name === 'generate_video_without_watermark'));
   assert.ok(session.messages[1].content[0].text.includes('9:16'));
   assert.ok(session.messages[1].content[0].text.includes('电影质感'));
   ark.finish(session);
@@ -482,7 +490,7 @@ test('live running events cannot unlock sending before recovery has synchronized
   session.status = 'idle';
   ark.emit(session, { type: 'session.status_idle' });
   await settled(request, task.id, 'interrupted');
-  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: 'A product film' } });
+  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'Skill', input: { skill: 'video-producer' } });
   ark.finish(session, false, { stopReason: 'requires_action', eventIds: [tool.id] });
   assert.equal((await request(`/api/tasks/${task.id}/recover`, {})).status, 202);
   const recovering = await until(async () => {

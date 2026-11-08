@@ -9,6 +9,7 @@ import { createAvatarLibrary } from './lib/avatars.js';
 import { createTaskQueue } from './lib/task-queue.js';
 import { createConversations } from './lib/conversations.js';
 import { createReferenceAssetTool } from './lib/reference-assets.js';
+import { createGenerationTools } from './lib/generation-tools.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const envPath = process.env.VISIONARY_ENV_FILE || path.join(root, '.env');
@@ -89,6 +90,7 @@ const avatars = createAvatarLibrary({
   }
 });
 if (ark.config.avatarLibraryConfigured) ark.managed.configureReferenceAssets(createReferenceAssetTool({ avatars, ark, getAssets: () => assets, project: ark.config.project, redact }));
+ark.managed.configureGenerationTools(createGenerationTools({ ark, getAssets: () => assets, redact }));
 for (const item of assets) {
   if (['uploading', 'submitting'].includes(item.enrollmentState)) {
     item.enrollmentState = item.enrollmentState === 'submitting' ? 'unknown' : 'failed';
