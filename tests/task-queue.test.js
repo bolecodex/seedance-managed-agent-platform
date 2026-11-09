@@ -44,3 +44,22 @@ test('releases slots after asynchronous rejection and synchronous exceptions', a
 test('rejects invalid execution limits', () => {
   for (const limit of [0, -1, 1.5, NaN, Infinity, '3']) assert.throws(() => createTaskQueue(limit), /正整数/);
 });
+
+test('changing concurrency drains queued jobs without cancelling running work', async () => {
+  const queue = createTaskQueue(1);
+  const started = [];
+  const release = [];
+  const jobs = Array.from({ length: 4 }, (_, i) => queue.enqueue(async () => { started.push(i); await new Promise(resolve => { release[i] = resolve; }); }));
+  await nextTurn();
+  queue.setConcurrency(2);
+  await nextTurn();
+  assert.deepEqual(started, [0, 1]);
+  queue.setConcurrency(1);
+  release[0](); await nextTurn();
+  assert.deepEqual(started, [0, 1]);
+  release[1](); await nextTurn();
+  assert.deepEqual(started, [0, 1, 2]);
+  release[2](); await nextTurn(); release[3]();
+  await Promise.all(jobs);
+  assert.throws(() => queue.setConcurrency(0), /正整数/);
+});

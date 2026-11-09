@@ -53,6 +53,8 @@ test('text-only video generation disables watermarks without requiring portrait 
   const { execute, requests } = setup();
   const result = await execute(videoToolName, videoInput);
   assert.equal(result.video_url, 'https://files.test/sea.mp4');
+  assert.equal(result.prompt, videoInput.prompt);
+  assert.equal(result.cgt_id, 'video-1');
   assert.equal(requests[0].watermark, false);
   assert.deepEqual(requests[0].content, [{ type: 'text', text: videoInput.prompt }]);
 });
@@ -77,6 +79,8 @@ test('a live Session exposes both tools and returns real image and video outputs
   const session = await until(() => [...ark.sessions.values()].find(item => item.submissions === 1));
   assert.ok(session.agent.tools.some(tool => tool.name === imageToolName));
   assert.ok(session.agent.tools.some(tool => tool.name === videoToolName));
+  assert.match(session.message.events.find(event => event.type === 'system.message').content[0].text, /完整提示词.*cgt-id/);
+  assert.match(session.message.events.find(event => event.type === 'system.message').content[0].text, /最终交付不返回参考素材/);
   const builtins = session.agent.tools.find(tool => tool.type === 'agent_toolset_multimodal_20260825').configs;
   assert.equal(builtins.find(tool => tool.name === 'image_generate').enabled, true);
   assert.equal(builtins.find(tool => tool.name === 'image_generate').permission_policy.type, 'always_ask');
@@ -100,6 +104,8 @@ test('a live Session exposes both tools and returns real image and video outputs
   ark.finish(session);
   const done = await until(async () => { const { task: value } = await request(`/api/tasks/${task.id}`); return value.status === 'completed' && value; });
   assert.ok(done.files.some(file => file.download_url === 'https://files.test/generated.jpg'));
-  assert.ok(done.files.some(file => file.download_url === 'https://files.test/generated.mp4'));
+  const video = done.files.find(file => file.download_url === 'https://files.test/generated.mp4');
+  assert.equal(video.prompt, videoInput.prompt);
+  assert.equal(video.cgt_id, 'video-test-1');
   assert.equal(session.submissions, 1);
 });

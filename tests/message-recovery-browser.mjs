@@ -93,7 +93,7 @@ test('sending restores a disconnected Session and submits only the new follow-up
 
 test('recovery that discovers a tool approval preserves the draft and reveals explicit controls', async t => {
   const { baseUrl, request, ark, session, task } = await interruptedConversation(t);
-  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: 'One minute film' } });
+  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'compose_video', input: { output_path: '/mnt/session/outputs/one-minute-film.mp4' }, evaluated_permission: 'ask' });
   ark.finish(session, false, { stopReason: 'requires_action', eventIds: [tool.id] });
   const { page, errors } = await openPage(t, baseUrl, task.id);
   await until(() => page.locator('#runBtn').isEnabled());

@@ -12,8 +12,8 @@ async function setup(t, options) {
     ARK_API_KEY: 'local-test-key', ARK_AGENT_ID: 'test-agent', ARK_ENVIRONMENT_ID: 'test-environment',
     ARK_BASE_URL: ark.baseUrl, ARK_ASSET_API_URL: ark.baseUrl, ARK_ACCESS_KEY: 'asset-test-ak', ARK_SECRET_KEY: 'asset-test-sk', ARK_VIDEO_MODEL: 'test-seedance'
   });
-  const upload = async name => {
-    const response = await fetch(`${server.baseUrl}/api/uploads`, { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name), 'X-Collection': 'reference' }, body: 'test image' });
+  const upload = async (name, contents = 'test image') => {
+    const response = await fetch(`${server.baseUrl}/api/uploads`, { method: 'POST', headers: { 'X-File-Name': encodeURIComponent(name), 'X-Collection': 'reference' }, body: contents });
     assert.equal(response.status, 201);
     return (await response.json()).item;
   };
@@ -127,6 +127,31 @@ test('real portraits use AIGC enrollment without H5 verification and retain thei
   assert.equal(stored.synthetic, false);
   assert.equal(stored.assetGroupType, 'AIGC');
   assert.equal((await request('/api/assets')).items.find(item => item.id === person.id).portraitType, 'real');
+  ark.finish(session);
+  await until(async () => (await request(`/api/tasks/${task.id}`)).task.status === 'completed');
+});
+
+test('person videos enter AIGC as Video assets and are sent with the video_url modality', async t => {
+  const { ark, upload, request } = await setup(t);
+  const clip = await upload('real-person-reference.mp4', 'test video bytes');
+  assert.equal(clip.type, 'video/mp4');
+  const { task } = await request('/api/creative', { prompt: '参考这段真人视频，保留人物身份并生成延续镜头。', assetIds: [clip.id] });
+  await until(() => [...ark.sessions.values()][0]?.submissions === 1);
+  const session = [...ark.sessions.values()][0];
+  assert.match(session.message.events[1].content[0].text, /视频必须作为 Video 类型入库/);
+  assert.match(session.message.events[1].content[0].text, /视频 asset:\/\/ 使用 video_url/);
+  enroll(ark, session, [clip.id], 'real');
+  await until(() => session.customResults.length === 1);
+  assert.equal(session.customResults[0].is_error, false);
+  const createAsset = ark.assetRequests.find(item => item.action === 'CreateAsset');
+  assert.equal(createAsset.body.AssetType, 'Video');
+  assert.equal(createAsset.body.URL, `https://files.test/${clip.arkFileId}`);
+  const video = ark.emit(session, { type: 'agent.custom_tool_use', name: 'generate_video_with_assets', input: { prompt: '视频1中的真人走进教室，镜头保持连贯。', asset_ids: [clip.id], duration: 10, ratio: '16:9', resolution: '720p', generate_audio: false, output_path: '/mnt/session/outputs/continuation.mp4' } });
+  session.status = 'idle';
+  ark.emit(session, { type: 'session.status_idle', stop_reason: { type: 'requires_action', event_ids: [video.id] } });
+  await until(() => session.customResults.length === 2);
+  assert.equal(session.customResults[1].is_error, false);
+  assert.deepEqual(ark.videoRequests[0].content[1], { type: 'video_url', video_url: { url: 'asset://asset-test-1' }, role: 'reference_video' });
   ark.finish(session);
   await until(async () => (await request(`/api/tasks/${task.id}`)).task.status === 'completed');
 });

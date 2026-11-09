@@ -13,6 +13,19 @@ const templates = {
   film: { text: '为城市精品咖啡品牌设计一支 15 秒短片的分镜方案。清晨街角、窗边咖啡与自然上升的蒸汽，温暖电影感。请写明每个镜头的景别、运镜、时长与声音设计。', style: '电影质感', ratio: '16:9' },
   poster: { text: '为独立设计展创作一张品牌海报。以几何图形、酸性黄与雾蓝色形成鲜明对比，留出标题排版空间，构图简洁大胆，传递自由探索的精神。', style: '极简设计', ratio: '9:16' }
 };
+const inspirationSets = [templates, {
+  product: { text: '为植物香氛品牌拍摄一张清晨主视觉。透明玻璃香水瓶，苔绿色背景，斜射的晨光、露珠与细腻玻璃反射，构图克制，留出品牌文字空间。', style: '自然写实', ratio: '4:3', title: '把清晨，装进瓶子里', detail: '植物香氛 · 自然光影' },
+  film: { text: '为户外生活品牌设计一支 15 秒旅行短片的分镜方案。雾中的山谷、蜿蜒公路与日出，低饱和绿色和温暖胶片质感。写明每个镜头的景别、运镜、时长与声音设计。', style: '电影质感', ratio: '16:9', title: '去风景里，找个答案', detail: '旅行叙事 · 胶片质感' },
+  poster: { text: '为周末创意市集设计一张竖版海报。用鼠尾草绿、奶油白与炭黑，组合有机几何图形和大胆文字排版，为活动标题与日期留出空间，传递轻松自由的气质。', style: '极简设计', ratio: '9:16', title: '让周末，有点不一样', detail: '活动海报 · 自由排版' }
+}, {
+  product: { text: '为小众木质香水设计一张商业摄影主视觉。琥珀玻璃瓶置于浅色石台上，午后窗影与一枝橄榄叶形成呼应，暖中性色调，清晰表现玻璃与纸质标签的真实材质。', style: '自然写实', ratio: '1:1', title: '给日常，一点仪式感', detail: '香氛静物 · 材质表达' },
+  film: { text: '为慢生活品牌设计一支 20 秒短片的分镜方案。从窗边光影到山间散步，表现放慢脚步的生活节奏。使用克制运镜与自然声音，列出每个镜头的景别、时长与转场。', style: '电影质感', ratio: '16:9', title: '慢一点，故事更动人', detail: '生活方式 · 情绪短片' },
+  poster: { text: '为独立艺术书店设计一张品牌海报。以雾蓝、浅绿与米白搭配大幅几何图形，突出阅读与想象的主题，为书店名称预留清晰的排版区域，画面有秩序又有趣。', style: '极简设计', ratio: '4:3', title: '为想象，多留一点白', detail: '书店品牌 · 几何表达' }
+}];
+let inspirationRound = 0;
+let activeCommandIndex = 0;
+let commandQuery = '';
+let dismissedCommandQuery = null;
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const formatSize = bytes => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const fileIcon = type => type?.startsWith('image/') ? '▧' : type?.startsWith('video/') ? '▷' : type?.startsWith('audio/') ? '♫' : '▤';
@@ -21,12 +34,19 @@ const selectableAsset = item => item.collection === 'reference' ? Boolean(item.a
 let assetPollTimer;
 let assetRefreshVersion = 0;
 let toastTimer;
-function toast(message, error = false) {
-  $('#toast').textContent = message;
-  $('#toast').classList.remove('hidden');
-  $('#toast').classList.toggle('error', error);
+function toast(message, error = false, action = null) {
+  const notice = $('#toast');
+  notice.replaceChildren(Object.assign(document.createElement('span'), { textContent: message }));
+  if (action) {
+    const button = Object.assign(document.createElement('button'), { textContent: action.label, className: 'toast-action' });
+    button.onclick = () => { clearTimeout(toastTimer); notice.classList.add('hidden'); action.run(); };
+    notice.append(button);
+  }
+  notice.classList.remove('hidden');
+  notice.classList.toggle('error', error);
+  notice.setAttribute('role', error ? 'alert' : 'status');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $('#toast').classList.add('hidden'), 4500);
+  toastTimer = setTimeout(() => notice.classList.add('hidden'), action ? 8000 : 4500);
 }
 async function api(url, options = {}) {
   const response = await fetch(url, options);
@@ -59,7 +79,7 @@ const taskStateLabel = task => task.status === 'interrupted' && task.connection 
 const cleanAgentText = value => String(value || '').replace(/<<GOAL_(COMPLETE|BLOCKED)>>/g, '').trim();
 function storeDraft() {
   if (!draftsReady) return;
-  try { localStorage.setItem(`visionary-draft:${draftScope}`, JSON.stringify({ text: $('#prompt').value, selected: [...state.selected], options: options(), mode: $('#agentMode').value, submission: pendingSubmission })); } catch {}
+  try { localStorage.setItem(`visionary-draft:${draftScope}`, JSON.stringify({ text: $('#prompt').value, selected: [...state.selected], options: options(), mode: $('#agentMode').value, submission: pendingSubmission, template: state.activeTemplate })); } catch {}
 }
 function switchDraft(scope) {
   if (draftScope === scope) return;
@@ -68,6 +88,7 @@ function switchDraft(scope) {
   try { saved = JSON.parse(localStorage.getItem(`visionary-draft:${scope}`) || 'null'); } catch {}
   pendingSubmission = saved?.submission || null;
   $('#prompt').value = saved?.text || ''; state.selected = new Set(saved?.selected || []); state.composerQueue = [];
+  state.activeTemplate = saved?.template || null;
   $('#agentMode').value = saved?.mode || 'agent';
   restoreOptions(saved?.options || {}); renderAttachments(); updateCount();
 }
@@ -366,9 +387,11 @@ function renderConversation(task, { revealRequestId } = {}) {
       const message = revealRequestId && $$('[data-request-id]').find(node => node.dataset.requestId === revealRequestId);
       if (message) message.scrollIntoView({ behavior: 'instant', block: 'nearest' });
       else scroll.scrollTop = scroll.scrollHeight;
+      syncJumpLatest();
     });
   }
   updateComposerActions();
+  syncJumpLatest();
 }
 function taskAction(action, body = {}, id = state.activeTaskId) {
   if (!id) throw new Error('请先打开一个会话');
@@ -422,9 +445,14 @@ $('#goalForm').onsubmit = async event => {
 const slashCommands = [{ command: '/goal', label: '设置持续目标' }, { command: '/pause', label: '暂停当前会话' }, { command: '/resume', label: '继续当前会话' }, { command: '/new', label: '新建会话' }, { command: '/plan', label: '先制定计划' }, { command: '/agent', label: '切换 Agent 模式' }, { command: '/fork', label: '复制当前会话' }, { command: '/rename', label: '重命名当前会话' }, { command: '/archive', label: '归档当前会话' }, { command: '/pin', label: '置顶当前会话' }, { command: '/clear', label: '清空本机会话记录' }];
 function renderCommands() {
   const text = $('#prompt').value.trim();
-  const items = text.startsWith('/') && !text.includes(' ') ? slashCommands.filter(item => item.command.startsWith(text)) : [];
+  if (text !== commandQuery) { commandQuery = text; activeCommandIndex = 0; dismissedCommandQuery = null; }
+  const items = text !== dismissedCommandQuery && text.startsWith('/') && !text.includes(' ') ? slashCommands.filter(item => item.command.startsWith(text)) : [];
+  activeCommandIndex = Math.min(activeCommandIndex, Math.max(0, items.length - 1));
   $('#slashCommands').classList.toggle('hidden', !items.length);
-  $('#slashCommands').innerHTML = items.map(item => `<button role="menuitem" data-command="${item.command}"><b>${item.command}</b><span>${item.label}</span></button>`).join('');
+  $('#prompt').setAttribute('aria-expanded', String(Boolean(items.length)));
+  if (items.length) $('#prompt').setAttribute('aria-activedescendant', `command-${activeCommandIndex}`);
+  else $('#prompt').removeAttribute('aria-activedescendant');
+  $('#slashCommands').innerHTML = items.map((item, index) => `<button id="command-${index}" role="option" aria-selected="${index === activeCommandIndex}" tabindex="-1" data-command="${item.command}"><b>${item.command}</b><span>${item.label}</span><small>${index === activeCommandIndex ? '↵' : ''}</small></button>`).join('');
   $$('[data-command]').forEach(button => button.onclick = () => { $('#prompt').value = button.dataset.command; run(); });
 }
 async function handleCommand(text) {
@@ -481,8 +509,45 @@ function updateCount() {
   const maximum = Number.parseFloat(getComputedStyle($('#prompt')).maxHeight) || 180;
   $('#prompt').style.height = `${Math.min(maximum, Math.max(57, $('#prompt').scrollHeight))}px`;
   try { localStorage.setItem('visionary-draft', $('#prompt').value); } catch {}
-  storeDraft(); renderCommands(); updateComposerActions();
+  syncTemplateContext(); storeDraft(); renderCommands(); updateComposerActions();
 }
+
+function syncTemplateContext() {
+  if (!$('#prompt').value.trim()) state.activeTemplate = null;
+  const active = state.activeTemplate;
+  $('#composerContext').classList.toggle('hidden', !active);
+  $('#templateContext').textContent = active ? `灵感起点 · ${active.label}` : '';
+  $$('[data-template]').forEach(button => {
+    const selected = active?.key === button.dataset.template && active.round === inspirationRound;
+    button.classList.toggle('is-selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+    button.querySelector('.template-cta').firstChild.textContent = selected ? '已选用 ' : '使用灵感 ';
+    button.querySelector('.template-cta use').setAttribute('href', selected ? '#i-check' : '#i-diagonal');
+  });
+}
+
+function editPromptWithUndo(text, settings, template, message) {
+  const previous = { text: $('#prompt').value, settings: options(), template: state.activeTemplate };
+  const scope = draftScope;
+  $('#prompt').value = text;
+  state.activeTemplate = template;
+  restoreOptions(settings);
+  updateCount(); focusComposer();
+  toast(message, false, { label: '撤销', run: () => {
+    if (scope !== draftScope || $('#prompt').value !== text) return toast('草稿已继续编辑，当前内容已保留');
+    $('#prompt').value = previous.text; state.activeTemplate = previous.template;
+    restoreOptions(previous.settings); updateCount(); $('#prompt').focus({ preventScroll: true });
+  } });
+}
+
+function syncJumpLatest() {
+  const scroll = $('#studioScroll');
+  const away = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 160;
+  $('#jumpLatest').classList.toggle('hidden', !away || $('#conversation').classList.contains('hidden'));
+}
+$('#studioScroll').addEventListener('scroll', syncJumpLatest, { passive: true });
+$('#jumpLatest').onclick = () => $('#studioScroll').scrollTo({ top: $('#studioScroll').scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+new ResizeObserver(syncJumpLatest).observe($('#conversation'));
 function setTheme(theme, persist = false) {
   const isLight = theme === 'light';
   document.documentElement.dataset.theme = isLight ? 'light' : 'dark';
@@ -508,7 +573,7 @@ function setOption(selector, value, className, readValue) {
     button.classList.toggle(className, selected);
     button.setAttribute('aria-pressed', String(selected));
   });
-  syncOptionSummary();
+  syncOptionSummary(); storeDraft();
 }
 function options() {
   return { aspectRatio: $('[data-ratio].selected').dataset.ratio, style: $('.style.active').textContent, optimize: $('[data-toggle="optimize"]').classList.contains('on'), versions: $('[data-toggle="versions"]').classList.contains('on') };
@@ -621,25 +686,42 @@ $('#heroStart').onclick = focusComposer;
 $('#prompt').oninput = updateCount;
 try {
   const saved = JSON.parse(localStorage.getItem('visionary-draft:new') || 'null');
-  if (saved) { $('#prompt').value = saved.text || ''; state.selected = new Set(saved.selected || []); pendingSubmission = saved.submission || null; $('#agentMode').value = saved.mode || 'agent'; restoreOptions(saved.options || {}); }
+  if (saved) { $('#prompt').value = saved.text || ''; state.selected = new Set(saved.selected || []); pendingSubmission = saved.submission || null; state.activeTemplate = saved.template || null; $('#agentMode').value = saved.mode || 'agent'; restoreOptions(saved.options || {}); }
   else { const draft = localStorage.getItem('visionary-draft'); if (draft !== null) $('#prompt').value = draft; }
 } catch {}
 draftsReady = true; updateCount();
 $$('[data-template]').forEach(button => button.onclick = () => {
-  const template = templates[button.dataset.template];
-  $('#prompt').value = template.text;
-  restoreOptions({ style: template.style, aspectRatio: template.ratio });
-  updateCount(); focusComposer(); toast('已填入灵感模板，可继续自由修改');
+  const key = button.dataset.template;
+  const template = inspirationSets[inspirationRound][key];
+  const label = button.querySelector('.template-copy b').textContent;
+  editPromptWithUndo(template.text, { ...options(), style: template.style, aspectRatio: template.ratio }, { key, label, round: inspirationRound }, '已填入灵感，可继续自由修改');
 });
+const originalTemplateLabels = Object.fromEntries($$('[data-template]').map(button => [button.dataset.template, { title: button.querySelector('b').textContent, detail: button.querySelector('.template-copy small').textContent }]));
+$('#refreshInspiration').onclick = () => {
+  inspirationRound = (inspirationRound + 1) % inspirationSets.length;
+  $$('[data-template]').forEach(button => {
+    const key = button.dataset.template; const template = inspirationSets[inspirationRound][key];
+    button.querySelector('.template-copy b').textContent = template.title || originalTemplateLabels[key].title;
+    button.querySelector('.template-copy small').textContent = template.detail || originalTemplateLabels[key].detail;
+    button.querySelector('.template-style').textContent = `${template.style} · ${template.ratio}`;
+    button.dataset.variant = inspirationRound;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) button.animate([{ opacity: .45, transform: 'translateY(5px)' }, { opacity: 1, transform: 'translateY(0)' }], { duration: 320, easing: 'ease-out' });
+  });
+  syncTemplateContext();
+  $('#inspirationAnnouncement').textContent = `已切换到第 ${inspirationRound + 1} 组灵感，当前草稿已保留。`;
+};
+const inspirationAnnouncement = Object.assign(document.createElement('span'), { id: 'inspirationAnnouncement', className: 'sr-only' });
+inspirationAnnouncement.setAttribute('role', 'status'); $('.inspiration').append(inspirationAnnouncement);
+$('#clearTemplate').onclick = () => { state.activeTemplate = null; updateCount(); $('#prompt').focus({ preventScroll: true }); };
 $$('[data-ratio]').forEach(button => button.onclick = () => setOption('[data-ratio]', button.dataset.ratio, 'selected', item => item.dataset.ratio));
 $$('.style').forEach(button => button.onclick = () => setOption('.style', button.textContent, 'active', item => item.textContent));
-$$('.toggle').forEach(button => button.onclick = () => { const checked = button.classList.toggle('on'); button.setAttribute('aria-checked', String(checked)); });
-$('#resetSettings').onclick = () => { restoreOptions(); toast('创作偏好已重置'); };
+$$('.toggle').forEach(button => button.onclick = () => { const checked = button.classList.toggle('on'); button.setAttribute('aria-checked', String(checked)); storeDraft(); });
+$('#resetSettings').onclick = () => { restoreOptions(); storeDraft(); toast('创作偏好已重置'); };
 $('#polish').onclick = () => {
   if (!$('#prompt').value.trim()) return toast('先写下一点你的想法', true);
   const suffix = ` 画面采用${options().style}风格，重视主体层次、自然光影与留白，保留品牌识别度。`;
   if ($('#prompt').value.includes('重视主体层次')) return toast('描述已润色，可以开始创作了');
-  $('#prompt').value += suffix; updateCount(); toast('已本地补充风格、构图和光影描述');
+  editPromptWithUndo($('#prompt').value + suffix, options(), state.activeTemplate, '已本地补充风格、构图和光影描述');
 };
 function newTask() {
   if (state.composerUploading) return toast('参考素材正在上传，请等待完成', true);
@@ -651,6 +733,7 @@ function newTask() {
   state.activePrompt = ''; state.activeTaskId = null; state.resultTaskId = null;
   $('#result').classList.add('hidden'); $('#progress').classList.add('hidden');
   $('#conversation').classList.add('hidden'); $('#studioWelcome').classList.remove('hidden');
+  syncJumpLatest();
   if (!$('#preferencesPanel').classList.contains('hidden')) togglePreferences(false);
   updateComposerActions();
   renderRecentTasks(); focusComposer(); $('#studioScroll').scrollTop = 0;
@@ -659,6 +742,19 @@ $('#newTask').onclick = $('#headerNewTask').onclick = newTask;
 $('#searchTasks').onclick = () => { location.hash = 'history'; showView(); $('#taskSearch').focus(); };
 document.addEventListener('keydown', event => {
   if (event.isComposing || $$('dialog[open]').length) return;
+  if (document.activeElement === $('#prompt') && !$('#slashCommands').classList.contains('hidden')) {
+    const commands = $$('#slashCommands [data-command]');
+    if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault(); activeCommandIndex = (activeCommandIndex + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length;
+      renderCommands(); $(`#command-${activeCommandIndex}`).scrollIntoView({ block: 'nearest' }); return;
+    }
+    if (event.key === 'Escape') { event.preventDefault(); dismissedCommandQuery = $('#prompt').value.trim(); renderCommands(); return; }
+    if ((event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) || event.key === 'Tab' && !event.shiftKey) {
+      event.preventDefault(); $('#prompt').value = commands[activeCommandIndex].dataset.command;
+      if (event.key === 'Enter') run(); else updateCount();
+      return;
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey && document.activeElement === $('#prompt') && !event.isComposing || (event.metaKey || event.ctrlKey) && event.key === 'Enter' && !$('#studioView').classList.contains('hidden')) { event.preventDefault(); run(); }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); newTask(); }
   if (event.key === 'Escape' && !$('#configDialog').open) {
@@ -686,6 +782,7 @@ function displayResult(task) {
   $('#outputFiles').replaceChildren();
   let outputCount = 0;
   let videoCount = 0;
+  const videoDetails = [];
   for (const file of task.files || []) {
     const url = safeUrl(file.download_url);
     if (!url) continue;
@@ -698,11 +795,25 @@ function displayResult(task) {
       else { media.controls = true; media.preload = 'metadata'; if (kind === 'video') { media.playsInline = true; videoCount++; card.classList.add('video-output'); } }
       card.append(media);
     }
-    const link = document.createElement('a'); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = `${file.filename || '下载产物'} ↗`; card.append(link); $('#outputFiles').append(card);
+    const link = document.createElement('a'); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = `${file.filename || '下载产物'} ↗`; card.append(link);
+    if (kind === 'video') {
+      const metadata = document.createElement('dl'); metadata.className = 'video-metadata';
+      const cgtId = file.cgt_id || (/^cgt-/.test(file.id || '') ? file.id : '未记录');
+      const prompt = file.prompt || '历史记录未保存生成提示词';
+      for (const [label, value, className] of [['cgt-id', cgtId, 'video-cgt-id'], ['视频提示词', prompt, 'video-prompt']]) {
+        const term = document.createElement('dt'); term.textContent = label;
+        const description = document.createElement('dd'); description.className = className; description.textContent = value;
+        metadata.append(term, description);
+      }
+      card.append(metadata);
+      videoDetails.push(`${file.filename || `视频 ${videoCount}`}\n${url}\ncgt-id：${cgtId}\n视频提示词：\n${prompt}`);
+    }
+    $('#outputFiles').append(card);
     outputCount++;
   }
   $('#outputHeading').textContent = videoCount ? `生成视频 · ${videoCount} 段` : `生成文件 · ${outputCount} 份`;
   $('#outputHeading').classList.toggle('hidden', outputCount === 0);
+  if (videoDetails.length) state.resultText += `\n\n${videoDetails.join('\n\n')}`;
   $('#result').classList.remove('hidden');
 }
 function displayProgress(task) {
@@ -771,6 +882,9 @@ function updateComposerActions() {
   const label = state.submitting ? '正在发送…' : state.composerQueue.length ? '请先处理参考素材' : blocked || (recover ? '恢复会话并发送' : busy ? followupSetting() === 'steer' ? '立即引导' : '排队发送' : '发送消息');
   $('#runBtn').firstElementChild.textContent = label; $('#runBtn').setAttribute('aria-label', label); $('#runBtn').title = label;
   $('#runBtn').classList.toggle('running', state.submitting);
+  $('#composer').classList.toggle('has-content', hasText);
+  $('#composer').setAttribute('aria-busy', String(state.submitting || state.composerUploading));
+  $('#runBtn').classList.toggle('is-idle', !hasText && !busy);
   $('#pauseBtn').classList.toggle('hidden', !busy); $('#pauseBtn').disabled = controlBusy || task?.status === 'pausing';
   $('#polish').classList.toggle('hidden', Boolean(busy));
   $('#prompt').placeholder = busy ? '补充指令，继续引导当前任务…' : state.activeTaskId ? '继续这段会话，或输入 / 查看命令…' : '向 Seedance 描述任务，或输入 / 查看命令…';
@@ -1357,25 +1471,165 @@ async function refreshHistory() {
     historyPollTimer = setTimeout(() => refreshHistory().catch(() => {}), delay);
   }
 }
-function openConfig() {
+let configSettings;
+let configBusy = false;
+let configDirty = false;
+let configReset = false;
+let configRequestVersion = 0;
+let configTab = 'connection';
+function configMessage(text, error = false) {
+  $('#configMessage').textContent = text;
+  $('#configMessage').classList.toggle('error', error);
+}
+function selectConfigTab(group, focus = false) {
+  configTab = group;
+  $$('[data-config-tab]').forEach(button => { const selected = button.dataset.configTab === group; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; if (selected && focus) button.focus(); });
+  $$('[data-config-panel]').forEach(panel => panel.classList.toggle('hidden', panel.dataset.configPanel !== group));
+}
+function configControls() {
+  $('#configFields').disabled = configBusy || !configSettings;
+  $('#saveConfig').disabled = configBusy || !configSettings || !configDirty;
+  $('#testConfig').disabled = configBusy || !configSettings || configDirty;
+  $('#resetConfig').disabled = configBusy || !configSettings;
+  $('#closeConfig').disabled = configBusy;
+  $('#saveConfig').textContent = configBusy ? '处理中…' : '保存设置';
+}
+function renderConfigFields(settings) {
+  const descriptions = {
+    connection: ['API 连接', '填写当前服务的方舟凭据和 API 地址。也可连接兼容方舟 Managed Agents 的代理服务。'],
+    agent: ['模型与会话', '可填写 Agent ID 复用已有 Agent，或留空 Agent ID 并填写 Agent 模型与图片模型自动创建。模型和接入点 ID 均可自由填写，以账号权限为准。'],
+    assets: ['素材库凭据', '人像与私域素材 API 使用 AK/SK，不能用 API Key 替代。仅使用 Agent 时可以留空。'],
+    advanced: ['高级设置', '按需调整素材接口、旧版真人回调和任务并发数。']
+  };
+  const sourceLabel = { user: '本机设置', environment: '环境配置', default: '默认值' };
+  $('#configFields').innerHTML = Object.entries(descriptions).map(([group, [title, description]]) => `<section id="configPanel-${group}" data-config-panel="${group}" role="tabpanel" aria-labelledby="configTab-${group}" class="config-panel${group !== configTab ? ' hidden' : ''}"><h3 class="sr-only">${title}</h3><p class="config-panel-description">${description}</p><div class="config-field-grid">${settings.fields.filter(field => field.group === group).map(field => {
+    const key = escapeHtml(field.key);
+    const name = escapeHtml(field.label);
+    const label = `<label for="setting-${key}">${name}<span class="config-field-source">${sourceLabel[field.source]}</span></label>`;
+    const help = `<small id="help-${key}">${escapeHtml(field.help || '')}<code>${key}</code></small>`;
+    if (field.secret) return `<div class="config-field config-field-wide" data-setting="${key}">${label}<div class="config-secret-controls"><select data-secret-action="${key}" aria-label="${name}操作"><option value="keep">${field.configured ? '已配置 · 保持不变' : '未配置 · 保持不变'}</option><option value="replace">替换密钥</option><option value="clear">清除并停用</option><option value="inherit">恢复环境配置${field.inheritedConfigured ? '（已配置）' : '（未配置）'}</option></select><div class="config-secret-input"><input id="setting-${key}" name="${key}" data-secret-value="${key}" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" aria-describedby="help-${key}" placeholder="${field.configured ? '已配置，选择替换后输入新密钥' : '选择替换后输入密钥'}" disabled><button type="button" data-reveal-secret="${key}" aria-label="显示输入的${name}" aria-pressed="false" disabled>显示</button></div></div>${help}</div>`;
+    return `<div class="config-field${field.type === 'url' || field.type === 'callback' ? ' config-field-wide' : ''}" data-setting="${key}">${label}<input id="setting-${key}" name="${key}" data-setting-value="${key}" type="${field.type === 'number' ? 'number' : 'text'}" ${field.type === 'number' ? 'min="1" max="32" step="1"' : 'maxlength="2048"'} value="${escapeHtml(field.value)}" placeholder="${escapeHtml(field.placeholder || field.default || '可选，留空不启用')}" autocomplete="off" spellcheck="false" aria-describedby="help-${key}">${help}<button type="button" class="config-inherit" data-inherit-setting="${key}">使用环境配置</button></div>`;
+  }).join('')}</div></section>`).join('');
+  selectConfigTab(configTab);
+  configControls();
+}
+async function openConfig() {
   closeSidebar(false);
+  if ($('#configDialog').open) return;
   $('#configDialog').showModal();
+  configSettings = null; configDirty = false; configReset = false;
+  $('#configTestResults').classList.add('hidden');
+  $('#configFields').innerHTML = '<p>正在读取本机设置…</p>';
+  configMessage(''); configControls();
+  const version = ++configRequestVersion;
+  try {
+    const [settings] = await Promise.all([api('/api/settings'), loadConfig()]);
+    if (version !== configRequestVersion || !$('#configDialog').open) return;
+    configSettings = settings; renderConfigFields(settings);
+  } catch (error) { if (version === configRequestVersion) configMessage(`设置读取失败：${error.message}。请关闭后重新打开。`, true); }
 }
 ['connectionButton', 'settingsButton', 'workspaceButton', 'modeBadge'].forEach(id => $(`#${id}`).onclick = openConfig);
-$('#closeConfig').onclick = () => $('#configDialog').close();
-$('#configDialog').onclick = event => { if (event.target === $('#configDialog')) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } };
-async function loadConfig() {
-  const config = await api('/api/config'); state.config = config;
+function closeConfig() {
+  if (configBusy) return;
+  if (configDirty && !window.confirm('放弃未保存的连接设置？')) return;
+  // Clear editable credentials synchronously; the native close event is queued.
+  $('#configFields').replaceChildren(); $('#configTestResults').replaceChildren();
+  $('#configDialog').close();
+}
+$('#closeConfig').onclick = closeConfig;
+$('#configDialog').addEventListener('cancel', event => { event.preventDefault(); closeConfig(); });
+$('#configDialog').addEventListener('close', () => { configRequestVersion++; configSettings = null; configDirty = false; configReset = false; $('#configFields').replaceChildren(); $('#configTestResults').replaceChildren(); });
+$('#configDialog').onclick = event => { if (event.target === $('#configDialog')) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) closeConfig(); } };
+$('#configTabs').onclick = event => { const button = event.target.closest('[data-config-tab]'); if (button) selectConfigTab(button.dataset.configTab); };
+$('#configTabs').onkeydown = event => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = $$('[data-config-tab]'); const index = tabs.findIndex(tab => tab.dataset.configTab === configTab);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  selectConfigTab(tabs[next].dataset.configTab, true);
+};
+function markConfigDirty() { configDirty = true; configMessage('有未保存的更改。'); $('#configTestResults').classList.add('hidden'); configControls(); }
+$('#configFields').addEventListener('input', event => { if (event.target.matches('[data-setting-value]')) delete event.target.dataset.inherit; markConfigDirty(); });
+$('#configFields').addEventListener('change', event => {
+  const key = event.target.dataset.secretAction;
+  if (key) {
+    const input = $(`#setting-${key}`); const enabled = event.target.value === 'replace';
+    input.disabled = !enabled; input.required = enabled; input.value = ''; input.type = 'password';
+    const reveal = $(`[data-reveal-secret="${key}"]`); reveal.disabled = !enabled; reveal.textContent = '显示'; reveal.setAttribute('aria-pressed', 'false');
+    if (enabled) input.focus();
+  }
+  markConfigDirty();
+});
+$('#configFields').addEventListener('click', event => {
+  const reveal = event.target.closest('[data-reveal-secret]');
+  if (reveal) { const input = $(`#setting-${reveal.dataset.revealSecret}`); const show = input.type === 'password'; input.type = show ? 'text' : 'password'; reveal.textContent = show ? '隐藏' : '显示'; reveal.setAttribute('aria-pressed', String(show)); return; }
+  const inherit = event.target.closest('[data-inherit-setting]');
+  if (inherit) {
+    const field = configSettings.fields.find(field => field.key === inherit.dataset.inheritSetting); const input = $(`#setting-${field.key}`);
+    input.value = field.inheritedValue; input.dataset.inherit = 'true'; markConfigDirty();
+  }
+});
+$('#resetConfig').onclick = () => {
+  if (!window.confirm('恢复启动时的环境配置？保存后将移除所有本机设置覆盖。')) return;
+  renderConfigFields({ ...configSettings, fields: configSettings.fields.map(field => ({ ...field, value: field.inheritedValue, configured: field.inheritedConfigured, source: 'environment' })) });
+  configReset = true; markConfigDirty(); configMessage('已恢复为环境配置预览，点击「保存设置」后生效。');
+};
+$('#configForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (configBusy || !configSettings || !configDirty) return;
+  const values = {};
+  for (const field of configSettings.fields) {
+    const input = $(`#setting-${field.key}`);
+    if (field.secret) {
+      const action = $(`[data-secret-action="${field.key}"]`).value;
+      if (action === 'replace') {
+        if (!input.value.trim()) { selectConfigTab(field.group); input.focus(); return configMessage(`请输入${field.label}，或选择保持不变。`, true); }
+        values[field.key] = input.value.trim();
+      } else if (action === 'clear') values[field.key] = '';
+      else if (action === 'inherit') values[field.key] = null;
+    } else {
+      if (input.dataset.inherit) values[field.key] = null;
+      else if (input.value !== (configReset ? field.inheritedValue : field.value)) values[field.key] = input.value;
+      if (field.type === 'number' && !input.checkValidity()) { selectConfigTab(field.group); input.focus(); return configMessage('最大并发任务数须为 1–32 的整数。', true); }
+    }
+  }
+  configBusy = true; configControls(); configMessage('正在保存设置…');
+  try {
+    const result = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: configSettings.revision, values, reset: configReset }) });
+    configSettings = result.settings; configDirty = false; configReset = false;
+    renderConfigFields(configSettings); applyConfig(result.config);
+    state.avatarGroups = []; $('#avatarGroup').innerHTML = '<option value="">自动创建 / 复用默认素材组</option>';
+    state.selected = new Set([...state.selected].filter(id => { const item = state.assets.find(asset => asset.id === id); return item && selectableAsset(item); }));
+    renderAssets(); renderAttachments(); storeDraft();
+    configMessage(result.message); toast('连接设置已保存并生效');
+  } catch (error) { configMessage(error.message, true); }
+  finally { configBusy = false; configControls(); }
+});
+$('#testConfig').onclick = async () => {
+  if (configBusy || !configSettings || configDirty) return;
+  configBusy = true; configControls(); configMessage('正在测试已保存连接，不会创建 Agent 或生成内容…');
+  try {
+    const result = await api('/api/settings/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: configSettings.revision }) });
+    $('#configTestResults').innerHTML = result.checks.map(check => `<div class="config-check${check.ok ? ' ready' : ' error'}"><b>${check.ok ? '✓' : '×'} ${escapeHtml(check.label)}</b><span>${escapeHtml(check.message)}</span></div>`).join('');
+    $('#configTestResults').classList.remove('hidden'); configMessage(result.ok ? '连接测试通过。模型权限与额度仍以实际调用为准。' : '部分连接未通过，请查看测试结果。', !result.ok);
+  } catch (error) { configMessage(error.message, true); }
+  finally { configBusy = false; configControls(); }
+};
+function applyConfig(config) {
+  state.config = config;
   $('#workspaceName').textContent = config.project || '创作空间';
   $('#connectionText').textContent = config.configured ? 'Agent 配置就绪' : config.filesApiConfigured ? 'Key 已配置 · 待配置 Agent' : '演示模式 · 未配置 Key';
   $('#connectionDot').classList.toggle('ready', config.configured);
+  $('#connectionDot').classList.remove('offline');
   $('#modeLabel').textContent = config.configured ? 'Seedance Managed Agent' : '演示模式 · 查看配置';
   $('#modeBadge').classList.toggle('live', config.configured);
+  $('#configStatusLabel').textContent = config.configured ? 'Agent 配置就绪' : config.filesApiConfigured ? '待配置 Agent' : '演示模式';
   const rows = [['执行引擎', config.provider || 'Seedance Managed Agent', Boolean(config.configured)], ['项目', config.project || 'default', true], ['API Key', config.filesApiConfigured ? '已配置（调用时校验）' : '未配置', config.filesApiConfigured], ['视觉创作 Agent', config.configured ? '配置就绪（调用时校验）' : '缺少 Agent ID 或模型配置', config.configured], ['私域素材库 AK/SK', config.avatarLibraryConfigured ? '已配置（调用时校验权限）' : '未配置', config.avatarLibraryConfigured], ['虚拟人像素材库', config.avatarLibraryConfigured ? 'AIGC 素材组 · 支持本地文件与 URL 入库' : '待配置 AK/SK', config.avatarLibraryConfigured]];
   $('#configRows').innerHTML = rows.map(([label, value, ready]) => `<div class="config-row"><span>${escapeHtml(label)}</span><span class="${ready ? 'ready' : ''}">${escapeHtml(value)}</span></div>`).join('');
   $('#portraitConfigNotice').textContent = !config.avatarLibraryConfigured ? '人像入库需要配置 AK/SK；真人与虚拟角色统一走 AIGC 库审核。' : '当前人像创作统一使用 AIGC 素材组，不按真人或虚拟角色分流；平台审核 Active 后生成。';
   renderAssets();
 }
+async function loadConfig() { applyConfig(await api('/api/config')); }
 showView();
 selectCollection('virtual-avatar');
 Promise.allSettled([

@@ -10,6 +10,7 @@ import { createTaskQueue } from './lib/task-queue.js';
 import { createConversations } from './lib/conversations.js';
 import { createReferenceAssetTool } from './lib/reference-assets.js';
 import { createGenerationTools } from './lib/generation-tools.js';
+import { createSettings } from './lib/settings.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const envPath = process.env.VISIONARY_ENV_FILE || path.join(root, '.env');
@@ -22,11 +23,11 @@ if (fs.existsSync(envPath)) {
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || '127.0.0.1';
-const maxConcurrentTasks = Number(process.env.MAX_CONCURRENT_TASKS || 3);
-const taskQueue = createTaskQueue(maxConcurrentTasks);
 const dataDir = path.resolve(process.env.VISIONARY_DATA_DIR || path.join(root, 'data'));
 const uploadDir = path.join(dataDir, 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true, mode: 0o700 });
+const settings = createSettings({ dataDir });
+const taskQueue = createTaskQueue(Number(settings.effective().MAX_CONCURRENT_TASKS));
 const maxUploadBytes = 512 * 1024 * 1024;
 const contentTypes = {
   '.pdf': 'application/pdf', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -46,7 +47,7 @@ const staticFiles = {
 const cleanName = value => path.basename(String(value || 'upload').replace(/\\/g, '/')).replace(/[\x00-\x1f\x7f]/g, '_').slice(0, 180) || 'upload';
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const redact = value => [process.env.ARK_API_KEY, process.env.ARK_ACCESS_KEY, process.env.ARK_SECRET_KEY, process.env.ARK_SESSION_TOKEN].filter(Boolean).reduce((text, secret) => text.split(secret).join('[已隐藏]'), String(value));
+const redact = settings.redact;
 
 function readStore(name, fallback) {
   const filePath = path.join(dataDir, name);
@@ -60,10 +61,12 @@ function saveStore(name, value) {
   fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { mode: 0o600 });
   fs.renameSync(temporaryPath, filePath);
 }
-const ark = createArkClient({ readStore, saveStore });
+// Libraries retain this facade. Swap its complete client only while idle.
+const ark = createArkClient({ readStore, saveStore, env: settings.effective() });
 let assets = readStore('assets.json', []);
 const tasks = readStore('tasks.json', []);
 if (!Array.isArray(assets) || !Array.isArray(tasks)) throw new Error('素材或任务记录格式错误，请检查 data 目录。');
+for (const task of tasks) if (!task.demo && !task.connectionScope) task.connectionScope = ark.config.connectionScope;
 saveStore('tasks.json', tasks);
 const persistAssets = () => saveStore('assets.json', assets);
 const persistTasks = () => saveStore('tasks.json', tasks);
@@ -89,8 +92,13 @@ const avatars = createAvatarLibrary({
     return path.join(uploadDir, item.localPath);
   }
 });
-if (ark.config.avatarLibraryConfigured) ark.managed.configureReferenceAssets(createReferenceAssetTool({ avatars, ark, getAssets: () => assets, project: ark.config.project, redact }));
-ark.managed.configureGenerationTools(createGenerationTools({ ark, getAssets: () => assets, redact }));
+function configureTools(client) {
+  if (client.config.avatarLibraryConfigured) client.managed.configureReferenceAssets(createReferenceAssetTool({ avatars, ark: client, getAssets: () => assets, project: client.config.project, redact }));
+  client.managed.configureGenerationTools(createGenerationTools({ ark: client, getAssets: () => assets, redact }));
+}
+configureTools(ark);
+let connectionRequests = 0;
+let testingConnection = false;
 for (const item of assets) {
   if (['uploading', 'submitting'].includes(item.enrollmentState)) {
     item.enrollmentState = item.enrollmentState === 'submitting' ? 'unknown' : 'failed';
@@ -268,6 +276,32 @@ async function route(request, response) {
     if (!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname) || Number(origin.port || 80) !== port) throw httpError(403, '不允许跨站请求');
   }
   if (request.method === 'GET' && url.pathname === '/api/config') return send(response, 200, ark.config);
+  if (request.method === 'GET' && url.pathname === '/api/settings') return send(response, 200, settings.publicSettings());
+  if (request.method === 'POST' && url.pathname === '/api/settings') {
+    const candidate = settings.prepare(await readBody(request));
+    const current = settings.effective();
+    const engineChanged = Object.keys(candidate.values).some(key => key !== 'MAX_CONCURRENT_TASKS' && candidate.values[key] !== current[key]);
+    if (engineChanged && (connectionRequests || testingConnection || conversations.jobs.size || refreshingTasks.size || syncingAssets.size || assets.some(item => avatars.busy(item.id) || portraits.busy(item.id)))) throw httpError(409, '创作、素材操作或连接测试正在进行，请先暂停任务并等待当前操作结束，再保存连接设置。');
+    let nextClient;
+    if (engineChanged) {
+      nextClient = createArkClient({ readStore, saveStore, env: candidate.values });
+      configureTools(nextClient);
+    }
+    settings.commit(candidate);
+    if (nextClient) Object.assign(ark, nextClient);
+    taskQueue.setConcurrency(Number(candidate.values.MAX_CONCURRENT_TASKS));
+    return send(response, 200, { settings: settings.publicSettings(), config: ark.config, message: '设置已保存并生效。已有演示会话继续使用演示模式；新建创作使用当前配置。' });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/settings/test') {
+    const body = await readBody(request);
+    if (body.revision !== settings.publicSettings().revision) throw httpError(409, '请先保存当前设置，再测试连接。');
+    if (testingConnection) throw httpError(409, '连接测试正在进行，请稍候。');
+    testingConnection = true;
+    try {
+      const checks = (await ark.testConnection()).map(check => ({ ...check, message: redact(check.message) }));
+      return send(response, 200, { ok: checks.every(check => check.ok), checks });
+    } finally { testingConnection = false; }
+  }
   if (request.method === 'GET' && url.pathname === '/api/avatar-groups') {
     const result = await ark.listVirtualGroups(url.searchParams.get('nextToken'));
     const items = (Array.isArray(result.Items) ? result.Items : []).filter(group => group.GroupType === 'AIGC' && group.ProjectName === ark.config.project).map(group => ({ id: group.Id, name: group.Name || group.Id, project: group.ProjectName, type: group.GroupType }));
@@ -330,6 +364,7 @@ async function route(request, response) {
     if (!task) throw httpError(404, '任务不存在');
     if (task.demo || !task.sessionId || !['completed', 'failed'].includes(task.status)) throw httpError(409, '仅能刷新已结束的真实任务产物，不会重新提交创作。');
     if (conversations.jobs.has(task.id)) throw httpError(409, '会话正在执行，不能同时刷新产物');
+    conversations.assertConnection(task);
     if (refreshingTasks.has(task.id)) throw httpError(429, '产物正在刷新，请稍后再试');
     refreshingTasks.add(task.id);
     try {
@@ -397,11 +432,13 @@ const server = http.createServer((request, response) => {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https: http:; media-src 'self' https: http:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  const connectionRequest = request.url?.startsWith('/api/') && !/^\/api\/(?:config|settings)(?:[/?]|$)/.test(request.url) && (!['GET', 'HEAD'].includes(request.method) || /^\/api\/(?:assets(?:[/?]|$)|avatar-groups(?:[/?]|$))/.test(request.url));
+  if (connectionRequest) connectionRequests++;
   route(request, response).catch(error => {
     if (!request.readableEnded) request.resume();
     if (response.headersSent) return response.destroy();
     send(response, error.status || 502, { error: redact(error.message || '服务暂时不可用') });
-  });
+  }).finally(() => { if (connectionRequest) connectionRequests--; });
 });
 server.requestTimeout = 10 * 60 * 1000;
 server.on('error', error => { console.error(`服务启动失败：${error.code === 'EADDRINUSE' ? `端口 ${port} 已被占用` : redact(error.message)}`); process.exitCode = 1; });

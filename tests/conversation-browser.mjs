@@ -87,7 +87,7 @@ test('Codex-style conversation controls, streaming, drafts, goals, recovery, app
   await until(() => page.locator('#pauseBtn').isVisible());
 
   // A tool approval remains explicit and is sent to the original Session.
-  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: 'Coffee at sunrise' } });
+  const tool = ark.emit(session, { type: 'agent.tool_use', name: 'compose_video', input: { output_path: '/mnt/session/outputs/coffee-campaign.mp4' }, evaluated_permission: 'ask' });
   ark.finish(session, false, { text: 'Please approve video creation', stopReason: 'requires_action', eventIds: [tool.id] });
   await until(() => page.locator('#approvalPanel').isVisible());
   assert.equal(await page.locator('#runBtn').isEnabled(), false);

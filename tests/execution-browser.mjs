@@ -55,7 +55,7 @@ test('execution timeline preserves tool details and approvals while keeping the 
   const failed = ark.emit(session, { type: 'agent.tool_use', name: 'visual_search', input: { query: 'urban headphone campaign' } });
   ark.emit(session, { type: 'agent.tool_result', tool_use_id: failed.id, is_error: true, content: [{ type: 'text', text: '搜索暂不可用，Agent 将使用已有参考图继续。' }] });
   await until(() => page.locator(`[data-step-id="${failed.id}"]`).innerText().then(text => text.includes('搜索暂不可用')));
-  const video = ark.emit(session, { type: 'agent.tool_use', name: 'video_generate', input: { prompt: '城市街角，人物佩戴耳机，镜头随音乐前进。', duration: 15 }, evaluated_permission: 'ask' });
+  const video = ark.emit(session, { type: 'agent.tool_use', name: 'compose_video', input: { output_path: '/mnt/session/outputs/sound-in-motion.mp4' }, evaluated_permission: 'ask' });
   ark.finish(session, false, { text: '参考图与分镜已核对，准备开始生成视频，请确认本次工具调用。', stopReason: 'requires_action', eventIds: [video.id], usage: { input_tokens: 1600, output_tokens: 480 } });
   await until(() => page.locator('#approvalPanel').isVisible());
   assert.equal(await page.locator(`[data-step-id="${video.id}"] .execution-step-status`).textContent(), '等待确认');
