@@ -1,6 +1,8 @@
+import { mentionContext, mentionKind, mentionToken, mentionCandidates, resolveMentions, removeMentions } from './mentions.js';
+
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
-const state = { config: {}, assets: [], tasks: [], verifications: [], avatarGroups: [], selected: new Set(), collection: 'virtual-avatar', queue: [], uploading: false, composerQueue: [], composerUploading: false, submitting: false, resultText: '', activeTaskId: null, activePrompt: '', viewedTask: null, taskMonitorError: false };
+const state = { config: {}, assets: [], assetsLoaded: false, assetsError: '', tasks: [], verifications: [], avatarGroups: [], selected: new Set(), collection: 'virtual-avatar', queue: [], uploading: false, composerQueue: [], composerUploading: false, submitting: false, resultText: '', activeTaskId: null, activePrompt: '', viewedTask: null, taskMonitorError: false };
 const activeTask = task => ['queued', 'running', 'pausing', 'recovering'].includes(task.status);
 const taskStatus = { queued: '排队中', running: '创作中', completed: '已完成', failed: '未完成', paused: '已暂停', pausing: '正在暂停', interrupted: '连接已中断', recovering: '正在恢复', waiting: '等待确认', terminated: '会话已终止' };
 const refreshingOutputs = new Set();
@@ -162,7 +164,8 @@ function executionContent(content) {
     const source = block.source || {};
     const url = safeUrl(source.url);
     const label = block.title || ({ image: '图片', video: '视频', audio: '音频', document: '文档' }[block.type] || '工具产物');
-    if (url && block.type === 'image') return `<a class="execution-media" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy">${escapeHtml(label)} ↗</a>`;
+    if (url && block.type === 'image') return `<a class="execution-media" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" ${mediaPreviewAttributes(block.type, url, label)}><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy">${escapeHtml(label)} ↗</a>`;
+    if (url && block.type === 'video') return `<a class="execution-file" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" ${mediaPreviewAttributes(block.type, url, label)}>${escapeHtml(label)} ↗</a>`;
     if (url) return `<a class="execution-file" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)} ↗</a>`;
     if (source.type === 'text') return `<div class="execution-text">${escapeHtml(source.data || '')}</div>`;
     return `<p class="execution-note">${escapeHtml(label)}${source.file_id ? ` · ${escapeHtml(source.file_id)}` : ' · 已返回媒体内容'}</p>`;
@@ -249,7 +252,7 @@ function renderReferenceCards(assetIds) {
     const media = url && kind === 'image' ? `<img class="message-asset-media" src="${url}" alt="${escapeHtml(name)}" loading="lazy">` : url && kind === 'video' ? `<video class="message-asset-media" src="${url}" preload="metadata" muted playsinline aria-label="${escapeHtml(name)}"></video><span class="message-asset-play" aria-hidden="true">▷</span>` : '';
     const detail = !asset ? '素材信息暂不可用' : !url ? `${label} · 仅云端素材` : `${label}${asset.size ? ` · ${formatSize(asset.size)}` : ''}`;
     const content = `<div class="message-asset-preview">${icon}${media}<span class="message-asset-order" aria-hidden="true">${index + 1}</span></div><div class="message-asset-info"><b title="${escapeHtml(name)}">${escapeHtml(name)}</b><small>${escapeHtml(detail)}${url ? '<span aria-hidden="true">↗</span>' : ''}</small></div>`;
-    return `<div class="message-asset${url ? '' : ' unavailable'}" role="listitem" data-reference-id="${escapeHtml(id)}">${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer" aria-label="预览参考素材 ${index + 1}：${escapeHtml(name)}">${content}</a>` : content}</div>`;
+    return `<div class="message-asset${url ? '' : ' unavailable'}" role="listitem" data-reference-id="${escapeHtml(id)}">${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer" ${mediaPreviewAttributes(kind, url, name)} aria-label="预览参考素材 ${index + 1}：${escapeHtml(name)}">${content}</a>` : content}</div>`;
   }).join('');
 }
 function renderMessageReferences(assetIds = []) {
@@ -443,6 +446,97 @@ $('#goalForm').onsubmit = async event => {
   finally { $('#saveGoal').disabled = false; }
 };
 const slashCommands = [{ command: '/goal', label: '设置持续目标' }, { command: '/pause', label: '暂停当前会话' }, { command: '/resume', label: '继续当前会话' }, { command: '/new', label: '新建会话' }, { command: '/plan', label: '先制定计划' }, { command: '/agent', label: '切换 Agent 模式' }, { command: '/fork', label: '复制当前会话' }, { command: '/rename', label: '重命名当前会话' }, { command: '/archive', label: '归档当前会话' }, { command: '/pin', label: '置顶当前会话' }, { command: '/clear', label: '清空本机会话记录' }];
+const mentionPicker = Object.assign(document.createElement('div'), { id: 'mentionPicker', className: 'mention-picker hidden' });
+mentionPicker.setAttribute('aria-label', '智能引用素材');
+$('#composer').prepend(mentionPicker);
+$('#prompt').setAttribute('aria-controls', 'slashCommands mentionOptions');
+$('#prompt').setAttribute('aria-autocomplete', 'list');
+$('#mediaPasteHint').textContent = '输入 @ 引用素材 · 支持拖入或粘贴图片、视频、音频';
+let mentionQueryKey = '';
+let dismissedMentionKey = null;
+let activeMentionId = null;
+let mentionComposing = false;
+let mentionHtml = '';
+function currentMention() {
+  const prompt = $('#prompt');
+  return mentionContext(prompt.value, prompt.selectionStart, prompt.selectionEnd);
+}
+function dismissMentions() {
+  dismissedMentionKey = mentionQueryKey;
+  mentionPicker.classList.add('hidden');
+  if ($('#slashCommands').classList.contains('hidden')) {
+    $('#prompt').setAttribute('aria-expanded', 'false');
+    $('#prompt').removeAttribute('aria-activedescendant');
+  }
+}
+function renderMentions() {
+  const context = currentMention();
+  const key = context ? JSON.stringify([draftScope, $('#prompt').value, context.start, context.end]) : '';
+  if (key !== mentionQueryKey) { mentionQueryKey = key; dismissedMentionKey = null; activeMentionId = null; }
+  if (!context || key === dismissedMentionKey || mentionComposing || document.activeElement !== $('#prompt') || $('#studioView').classList.contains('hidden')) { dismissMentions(); return; }
+  const items = mentionCandidates(state.assets, state.selected, context.query);
+  const available = items.filter(item => selectableAsset(item) && (state.selected.has(item.id) || state.selected.size < 20));
+  if (!available.some(item => item.id === activeMentionId)) activeMentionId = available[0]?.id || null;
+  const rows = items.map((item, index) => {
+    const selected = state.selected.has(item.id);
+    const ready = selectableAsset(item);
+    const disabled = !ready || !selected && state.selected.size >= 20;
+    const detail = !ready ? item.error ? '同步或审核失败，请在素材库处理' : item.collection === 'reference' ? '待同步到方舟' : '待审核通过 / 项目不匹配' : disabled ? '最多引用 20 份素材' : selected ? '已添加参考' : '选择后自动添加参考';
+    const thumbnail = item.hasLocalFile && item.type?.startsWith('image/') ? `<img src="/api/assets/${encodeURIComponent(item.id)}/content" alt="" loading="lazy">` : `<span aria-hidden="true">${fileIcon(item.type)}</span>`;
+    return `<button type="button" class="mention-option" id="mention-option-${index}" role="option" aria-selected="${activeMentionId === item.id}" aria-disabled="${disabled}" tabindex="-1" data-mention-id="${escapeHtml(item.id)}"${disabled ? ' disabled' : ''}><span class="mention-thumbnail">${thumbnail}</span><span class="mention-info"><b title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</b><small>${mentionKind(item)}${item.size ? ` · ${formatSize(item.size)}` : ''} · ${escapeHtml(detail)}${state.assets.some(other => other.id !== item.id && other.name === item.name) ? ` · ${escapeHtml(item.id.slice(0, 8))}` : ''}</small></span><span class="mention-option-action" aria-hidden="true">${disabled ? '—' : selected ? '✓' : '+'}</span></button>`;
+  }).join('');
+  const empty = state.assetsError ? `<b>素材暂时无法加载</b><span>请重试，已输入的内容会保留。</span><button type="button" data-mention-retry>重新加载</button>` : !state.assetsLoaded ? '<b>正在加载素材…</b>' : context.query.trim() ? '<b>没有找到匹配素材</b><span>试试文件名，或输入「图片」「视频」「音频」「文档」。</span>' : '<b>还没有可引用的素材</b><span>上传文件，或从素材库添加参考。</span><button type="button" data-mention-library>打开素材库 ↗</button>';
+  const html = `<div class="mention-heading"><span><b>@</b> 引用素材</span><small>${items.length ? `${items.length} 份 · 已添加的参考优先` : '让描述与素材对应'}</small></div><div id="mentionOptions" class="mention-options" role="listbox" aria-label="可引用素材">${rows}</div>${items.length ? '' : `<div class="mention-empty" role="status">${empty}</div>`}<div class="mention-footer"><span>↑ ↓ 选择 · Enter / Tab 引用 · Esc 关闭</span><small>按名称或类型搜索</small></div>`;
+  const scroll = mentionPicker.querySelector('.mention-options')?.scrollTop || 0;
+  if (html !== mentionHtml) {
+    mentionPicker.innerHTML = html; mentionHtml = html;
+    mentionPicker.querySelector('.mention-options').scrollTop = scroll;
+  }
+  const room = Math.max(110, $('#composer').getBoundingClientRect().top - $('.page-header').getBoundingClientRect().bottom - 16);
+  mentionPicker.style.setProperty('--mention-room', `${room}px`);
+  mentionPicker.classList.remove('hidden');
+  $('#slashCommands').classList.add('hidden');
+  $('#prompt').setAttribute('aria-expanded', 'true');
+  const active = mentionPicker.querySelector('[aria-selected="true"]');
+  if (active) $('#prompt').setAttribute('aria-activedescendant', active.id);
+  else $('#prompt').removeAttribute('aria-activedescendant');
+}
+function insertMention(id) {
+  const context = currentMention();
+  const asset = state.assets.find(item => item.id === id);
+  if (!context || !asset || !selectableAsset(asset)) return;
+  if (!state.selected.has(id) && state.selected.size >= 20) return toast('最多引用 20 份素材，请先移除部分参考', true);
+  const prompt = $('#prompt');
+  prompt.setRangeText(`${mentionToken(asset, state.assets)} `, context.start, context.end, 'end');
+  state.selected.add(id);
+  prompt.focus({ preventScroll: true });
+  renderAssets(); renderAttachments(); updateCount();
+}
+function removeReference(id) {
+  state.selected.delete(id);
+  const prompt = $('#prompt');
+  const start = prompt.selectionStart, end = prompt.selectionEnd;
+  const before = removeMentions(prompt.value.slice(0, start), id, state.assets).length;
+  const through = removeMentions(prompt.value.slice(0, end), id, state.assets).length;
+  prompt.value = removeMentions(prompt.value, id, state.assets);
+  prompt.setSelectionRange(before, through);
+  updateCount();
+}
+mentionPicker.addEventListener('mousedown', event => { if (event.target.closest('button')) event.preventDefault(); });
+mentionPicker.addEventListener('click', event => {
+  const option = event.target.closest('[data-mention-id]');
+  if (option && !option.disabled) insertMention(option.dataset.mentionId);
+  if (event.target.closest('[data-mention-library]')) { dismissMentions(); location.hash = 'assets'; selectCollection('reference'); }
+  if (event.target.closest('[data-mention-retry]')) refreshAssets().catch(error => toast(error.message, true));
+});
+$('#prompt').addEventListener('compositionstart', () => { mentionComposing = true; dismissMentions(); });
+$('#prompt').addEventListener('compositionend', () => { mentionComposing = false; dismissedMentionKey = null; updateCount(); });
+$('#prompt').addEventListener('focus', () => { dismissedMentionKey = null; renderMentions(); });
+$('#prompt').addEventListener('click', () => { dismissedMentionKey = null; renderMentions(); });
+$('#prompt').addEventListener('keyup', event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) renderMentions(); });
+document.addEventListener('selectionchange', () => { if (document.activeElement === $('#prompt')) renderMentions(); });
+document.addEventListener('pointerdown', event => { if (!mentionPicker.contains(event.target) && event.target !== $('#prompt')) dismissMentions(); });
+document.addEventListener('focusin', event => { if (event.target !== $('#prompt') && !mentionPicker.contains(event.target)) dismissMentions(); });
 function renderCommands() {
   const text = $('#prompt').value.trim();
   if (text !== commandQuery) { commandQuery = text; activeCommandIndex = 0; dismissedCommandQuery = null; }
@@ -509,7 +603,7 @@ function updateCount() {
   const maximum = Number.parseFloat(getComputedStyle($('#prompt')).maxHeight) || 180;
   $('#prompt').style.height = `${Math.min(maximum, Math.max(57, $('#prompt').scrollHeight))}px`;
   try { localStorage.setItem('visionary-draft', $('#prompt').value); } catch {}
-  syncTemplateContext(); storeDraft(); renderCommands(); updateComposerActions();
+  syncTemplateContext(); storeDraft(); renderCommands(); renderMentions(); updateComposerActions();
 }
 
 function syncTemplateContext() {
@@ -741,7 +835,25 @@ function newTask() {
 $('#newTask').onclick = $('#headerNewTask').onclick = newTask;
 $('#searchTasks').onclick = () => { location.hash = 'history'; showView(); $('#taskSearch').focus(); };
 document.addEventListener('keydown', event => {
-  if (event.isComposing || $$('dialog[open]').length) return;
+  if (event.isComposing || event.keyCode === 229 || mentionComposing || $$('dialog[open]').length) return;
+  if (document.activeElement === $('#prompt') && !mentionPicker.classList.contains('hidden')) {
+    const items = [...mentionPicker.querySelectorAll('[data-mention-id]:not(:disabled)')];
+    if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault();
+      if (items.length) {
+        const index = items.findIndex(item => item.dataset.mentionId === activeMentionId);
+        activeMentionId = items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].dataset.mentionId;
+        renderMentions(); mentionPicker.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+      }
+      return;
+    }
+    if (event.key === 'Escape') { event.preventDefault(); dismissMentions(); return; }
+    if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey || event.key === 'Tab' && !event.shiftKey && items.length) {
+      event.preventDefault();
+      if (activeMentionId) insertMention(activeMentionId);
+      return;
+    }
+  }
   if (document.activeElement === $('#prompt') && !$('#slashCommands').classList.contains('hidden')) {
     const commands = $$('#slashCommands [data-command]');
     if (['ArrowDown', 'ArrowUp'].includes(event.key)) {
@@ -772,6 +884,127 @@ document.addEventListener('keydown', event => {
   }
 });
 function safeUrl(value) { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : null; } catch { return null; } }
+function mediaPreviewAttributes(kind, url, title) {
+  return ['image', 'video'].includes(kind) ? `data-media-preview="${escapeHtml(url)}" data-media-kind="${kind}" data-media-title="${escapeHtml(title)}" aria-haspopup="dialog"` : '';
+}
+const mediaPreviewDialog = $('#mediaPreviewDialog');
+let mediaPreviewItems = [];
+let mediaPreviewIndex = 0;
+let mediaPreviewTrigger;
+function clearMediaPreview() {
+  for (const video of $$('#mediaPreviewContent video')) {
+    video.pause(); video.removeAttribute('src'); video.load();
+  }
+  $('#mediaPreviewContent').replaceChildren();
+}
+function renderMediaPreview() {
+  clearMediaPreview();
+  const item = mediaPreviewItems[mediaPreviewIndex];
+  const content = $('#mediaPreviewContent');
+  const status = $('#mediaPreviewStatus');
+  $('#mediaPreviewTitle').textContent = item.title;
+  $('#mediaPreviewCount').textContent = `${item.kind === 'image' ? '图片' : '视频'} · ${mediaPreviewIndex + 1} / ${mediaPreviewItems.length}`;
+  $('#mediaPreviewOriginal').href = item.url;
+  $('#previousMediaPreview').classList.toggle('hidden', mediaPreviewItems.length < 2);
+  $('#nextMediaPreview').classList.toggle('hidden', mediaPreviewItems.length < 2);
+  $('#previousMediaPreview').disabled = mediaPreviewIndex === 0;
+  $('#nextMediaPreview').disabled = mediaPreviewIndex === mediaPreviewItems.length - 1;
+  status.textContent = '正在加载预览…';
+  status.classList.remove('hidden');
+  const media = document.createElement(item.kind === 'image' ? 'img' : 'video');
+  media.addEventListener(item.kind === 'image' ? 'load' : 'loadeddata', () => {
+    if (media.isConnected) status.classList.add('hidden');
+  }, { once: true });
+  media.addEventListener('error', () => {
+    if (!media.isConnected) return;
+    status.textContent = '预览加载失败，请尝试打开原文件。';
+    status.classList.remove('hidden');
+    media.classList.add('hidden');
+  }, { once: true });
+  if (item.kind === 'image') media.alt = item.title;
+  else {
+    media.controls = true; media.playsInline = true; media.preload = 'auto';
+    media.setAttribute('aria-label', item.title);
+    const source = item.trigger.matches('video') ? item.trigger : item.trigger.closest('.output-media')?.querySelector('video');
+    if (source) {
+      const time = source.currentTime;
+      media.volume = source.volume; media.muted = source.muted;
+      media.defaultPlaybackRate = source.playbackRate; media.playbackRate = source.playbackRate;
+      source.pause();
+      if (Number.isFinite(time) && time > 0) media.addEventListener('loadeddata', () => {
+        if (media.isConnected) media.currentTime = Number.isFinite(media.duration) ? Math.min(time, media.duration) : time;
+      }, { once: true });
+    }
+  }
+  media.src = item.url;
+  content.append(media);
+}
+function openMediaPreview(trigger) {
+  const group = trigger.closest('#outputFiles, .message-references, #attachments, #assetList, .execution-step-body') || trigger;
+  const seen = new Set();
+  mediaPreviewItems = [...group.querySelectorAll('[data-media-preview]'), ...(group === trigger ? [trigger] : [])].flatMap(element => {
+    let url;
+    try { url = new URL(element.dataset.mediaPreview, location.href); } catch { return []; }
+    const kind = element.dataset.mediaKind;
+    const key = `${kind}:${url.href}`;
+    if (!['http:', 'https:'].includes(url.protocol) || !['image', 'video'].includes(kind) || seen.has(key)) return [];
+    seen.add(key);
+    return [{ url: url.href, kind, title: element.dataset.mediaTitle || '媒体预览', trigger: element }];
+  });
+  mediaPreviewIndex = mediaPreviewItems.findIndex(item => item.url === new URL(trigger.dataset.mediaPreview, location.href).href && item.kind === trigger.dataset.mediaKind);
+  if (mediaPreviewIndex < 0) return;
+  mediaPreviewTrigger = trigger;
+  renderMediaPreview();
+  mediaPreviewDialog.showModal();
+  $('#closeMediaPreview').focus({ preventScroll: true });
+}
+function stepMediaPreview(delta) {
+  const next = mediaPreviewIndex + delta;
+  if (next < 0 || next >= mediaPreviewItems.length) return;
+  mediaPreviewIndex = next; renderMediaPreview();
+}
+function closeMediaPreview() {
+  clearMediaPreview();
+  mediaPreviewDialog.close();
+}
+document.addEventListener('click', event => {
+  const trigger = event.target.closest('[data-media-preview]');
+  if (!trigger || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  // Leave the native video control bar available for inline playback and seeking.
+  if (trigger.matches('video') && event.clientY >= trigger.getBoundingClientRect().bottom - 48) return;
+  event.preventDefault();
+  openMediaPreview(trigger);
+});
+$('#closeMediaPreview').onclick = closeMediaPreview;
+$('#previousMediaPreview').onclick = () => stepMediaPreview(-1);
+$('#nextMediaPreview').onclick = () => stepMediaPreview(1);
+mediaPreviewDialog.addEventListener('keydown', event => {
+  event.stopPropagation();
+  if (event.key === 'Escape') { event.preventDefault(); closeMediaPreview(); }
+  else if (event.key === 'Tab') {
+    const focusable = [...mediaPreviewDialog.querySelectorAll('button:not(:disabled), a[href], video[controls]')].filter(element => element.getClientRects().length);
+    const first = focusable[0], last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }
+  // Native video shortcuts retain their usual playback/seek behavior.
+  else if (!event.target.matches('video') && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    event.preventDefault(); stepMediaPreview(event.key === 'ArrowLeft' ? -1 : 1);
+  }
+});
+let mediaPreviewBackdropDown = false;
+mediaPreviewDialog.addEventListener('pointerdown', event => { mediaPreviewBackdropDown = event.target === mediaPreviewDialog; });
+mediaPreviewDialog.addEventListener('click', event => {
+  if (event.target === mediaPreviewDialog && mediaPreviewBackdropDown) closeMediaPreview();
+  mediaPreviewBackdropDown = false;
+});
+mediaPreviewDialog.addEventListener('cancel', event => { event.preventDefault(); closeMediaPreview(); });
+mediaPreviewDialog.addEventListener('close', () => {
+  if (mediaPreviewDialog.open) return;
+  clearMediaPreview(); mediaPreviewItems = [];
+  const target = mediaPreviewTrigger?.isConnected ? mediaPreviewTrigger : $('#prompt');
+  target.focus({ preventScroll: true }); mediaPreviewTrigger = null;
+});
 function displayResult(task) {
   state.resultTaskId = task.id;
   $('#refreshOutputs').disabled = refreshingOutputs.has(task.id);
@@ -793,7 +1026,20 @@ function displayResult(task) {
       media.src = url;
       if (kind === 'image') { media.alt = file.filename || '创作产物'; media.loading = 'lazy'; }
       else { media.controls = true; media.preload = 'metadata'; if (kind === 'video') { media.playsInline = true; videoCount++; card.classList.add('video-output'); } }
-      card.append(media);
+      if (kind === 'image' || kind === 'video') {
+        const wrapper = document.createElement('div'); wrapper.className = 'output-media';
+        const preview = document.createElement('button'); preview.type = 'button'; preview.className = kind === 'image' ? 'output-image-preview' : 'output-expand';
+        const title = file.filename || '创作产物';
+        Object.assign(preview.dataset, { mediaPreview: url, mediaKind: kind, mediaTitle: title });
+        preview.setAttribute('aria-label', `放大预览 ${title}`); preview.setAttribute('aria-haspopup', 'dialog');
+        preview.title = '放大预览';
+        if (kind === 'image') preview.append(media);
+        else {
+          Object.assign(media.dataset, { mediaPreview: url, mediaKind: kind, mediaTitle: title });
+          preview.textContent = '⤢ 放大预览'; wrapper.append(media);
+        }
+        wrapper.append(preview); card.append(wrapper);
+      } else card.append(media);
     }
     const link = document.createElement('a'); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = `${file.filename || '下载产物'} ↗`; card.append(link);
     if (kind === 'video') {
@@ -941,6 +1187,12 @@ async function run() {
   const prompt = $('#prompt').value.trim();
   if (!prompt) { if (activeTask(state.viewedTask || {})) return controlTask('pause'); $('#prompt').focus(); return; }
   if (await handleCommand(prompt)) return;
+  const mentions = resolveMentions(prompt, state.assets);
+  const unavailable = mentions.ids.map(id => state.assets.find(item => item.id === id)).filter(item => !selectableAsset(item));
+  if (mentions.missing.length || unavailable.length) return toast('引用素材已删除、尚未同步或审核未通过，请重新选择 @ 素材或移除该引用', true);
+  if (new Set([...state.selected, ...mentions.ids]).size > 20) return toast('最多引用 20 份素材，请先移除部分参考', true);
+  mentions.ids.forEach(id => state.selected.add(id));
+  dismissMentions();
   const id = state.activeTaskId;
   const blocked = messageBlockReason(state.viewedTask);
   if (blocked) { revealMessageBlock(state.viewedTask); return toast(blocked, true); }
@@ -1006,8 +1258,14 @@ function renderAttachments() {
   const queued = state.composerQueue.map(upload => ({ item: upload.file, upload }));
   $('#attachments').replaceChildren(...[...selected, ...queued].map(({ item, upload }) => {
     const card = document.createElement('div'); card.className = `attachment${upload ? upload.status === 'failed' ? ' failed' : ' pending' : ''}`; card.setAttribute('role', 'listitem');
-    if (!upload && item.type?.startsWith('image/') && item.hasLocalFile) {
-      const image = document.createElement('img'); image.className = 'attachment-thumbnail'; image.src = `/api/assets/${encodeURIComponent(item.id)}/content`; image.alt = ''; card.append(image);
+    if (!upload && /^(image|video)\//.test(item.type) && item.hasLocalFile) {
+      const preview = document.createElement('button'); preview.type = 'button'; preview.className = 'attachment-preview';
+      Object.assign(preview.dataset, { mediaPreview: `/api/assets/${encodeURIComponent(item.id)}/content`, mediaKind: item.type.split('/')[0], mediaTitle: item.name });
+      preview.setAttribute('aria-label', `放大预览 ${item.name}`); preview.setAttribute('aria-haspopup', 'dialog');
+      if (item.type.startsWith('image/')) {
+        const image = document.createElement('img'); image.className = 'attachment-thumbnail'; image.src = preview.dataset.mediaPreview; image.alt = ''; preview.append(image);
+      } else { preview.classList.add('file-icon'); preview.textContent = fileIcon(item.type); }
+      card.append(preview);
     } else {
       const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = fileIcon(item.type); icon.setAttribute('aria-hidden', 'true'); card.append(icon);
     }
@@ -1025,7 +1283,7 @@ function renderAttachments() {
     const remove = document.createElement('button'); remove.className = 'attachment-remove'; remove.textContent = '×'; remove.setAttribute('aria-label', `移除参考 ${item.name}`); remove.disabled = upload?.status === 'uploading';
     remove.onclick = () => {
       if (upload) state.composerQueue = state.composerQueue.filter(entry => entry !== upload);
-      else state.selected.delete(item.id);
+      else removeReference(item.id);
       renderAttachments(); renderAssets();
     };
     card.append(remove); return card;
@@ -1033,7 +1291,7 @@ function renderAttachments() {
   storeDraft();
   const count = state.selected.size + state.composerQueue.length;
   $('#attachmentCount').textContent = count ? `(${count})` : '';
-  updateComposerActions();
+  updateComposerActions(); renderMentions();
 }
 const clipboardMediaExtensions = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/tiff': 'tiff', 'image/heic': 'heic', 'image/heif': 'heif',
@@ -1205,10 +1463,12 @@ function renderAssets() {
     const selectable = selectableAsset(item);
     const canEnroll = ['private-person', 'virtual-avatar'].includes(item.collection) && item.hasLocalFile && !item.assetId && !['uploading', 'submitting', 'unknown'].includes(item.enrollmentState);
     const canSync = item.collection === 'reference' && item.hasLocalFile && !item.arkFileId;
-    const thumbnail = item.type?.startsWith('image/') && item.hasLocalFile ? `<img class="asset-thumbnail" src="${contentUrl}" alt="" loading="lazy">` : `<span class="file-icon">${fileIcon(item.type)}</span>`;
-    return `<div class="asset-row">${thumbnail}<div class="asset-info"><b title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</b><small>${item.size ? formatSize(item.size) + ' · ' : ''}${dateLabel(item.createdAt)}${item.arkFileId ? ' · Files 已同步' : ''}${item.assetId ? ` · ${escapeHtml(item.assetId)}` : ''}</small></div><span class="asset-status ${item.error ? 'failed' : ''}" title="${escapeHtml(item.error || '')}">${escapeHtml(item.status)}${item.error ? `<small class="asset-error-detail">${escapeHtml(item.error)}</small>` : ''}</span>${canSync ? `<button class="asset-select" data-sync="${item.id}">同步到方舟 ↗</button>` : ''}${canEnroll ? `<button class="asset-select" data-enroll="${item.id}">提交入库 ↗</button>` : ''}${selectable ? `<button class="asset-select ${state.selected.has(item.id) ? 'selected' : ''}" data-select="${item.id}">${state.selected.has(item.id) ? '✓ 已选' : '＋ 引用'}</button>` : ''}${item.hasLocalFile ? `<a class="asset-preview" href="${contentUrl}" target="_blank" rel="noopener noreferrer" aria-label="预览 ${escapeHtml(item.name)}">↗</a>` : ''}<button class="asset-delete" data-delete="${item.id}" aria-label="删除本机记录 ${escapeHtml(item.name)}">×</button></div>`;
+    const preview = item.hasLocalFile ? mediaPreviewAttributes(item.type?.split('/')[0], contentUrl, item.name) : '';
+    const thumbnailMedia = item.type?.startsWith('image/') && item.hasLocalFile ? `<img class="asset-thumbnail" src="${contentUrl}" alt="" loading="lazy">` : `<span class="file-icon">${fileIcon(item.type)}</span>`;
+    const thumbnail = preview ? `<button type="button" class="asset-thumbnail-preview" ${preview} aria-label="放大预览 ${escapeHtml(item.name)}">${thumbnailMedia}</button>` : thumbnailMedia;
+    return `<div class="asset-row">${thumbnail}<div class="asset-info"><b title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</b><small>${item.size ? formatSize(item.size) + ' · ' : ''}${dateLabel(item.createdAt)}${item.arkFileId ? ' · Files 已同步' : ''}${item.assetId ? ` · ${escapeHtml(item.assetId)}` : ''}</small></div><span class="asset-status ${item.error ? 'failed' : ''}" title="${escapeHtml(item.error || '')}">${escapeHtml(item.status)}${item.error ? `<small class="asset-error-detail">${escapeHtml(item.error)}</small>` : ''}</span>${canSync ? `<button class="asset-select" data-sync="${item.id}">同步到方舟 ↗</button>` : ''}${canEnroll ? `<button class="asset-select" data-enroll="${item.id}">提交入库 ↗</button>` : ''}${selectable ? `<button class="asset-select ${state.selected.has(item.id) ? 'selected' : ''}" data-select="${item.id}">${state.selected.has(item.id) ? '✓ 已选' : '＋ 引用'}</button>` : ''}${item.hasLocalFile ? `<a class="asset-preview" href="${contentUrl}" target="_blank" rel="noopener noreferrer" ${preview} aria-label="预览 ${escapeHtml(item.name)}">↗</a>` : ''}<button class="asset-delete" data-delete="${item.id}" aria-label="删除本机记录 ${escapeHtml(item.name)}">×</button></div>`;
   }).join('');
-  $$('[data-select]').forEach(button => button.onclick = () => { const id = button.dataset.select; if (state.selected.has(id)) state.selected.delete(id); else state.selected.add(id); renderAssets(); renderAttachments(); toast(state.selected.size ? `已选择 ${state.selected.size} 份参考，可返回工作台创作` : '已取消引用'); });
+  $$('[data-select]').forEach(button => button.onclick = () => { const id = button.dataset.select; if (state.selected.has(id)) removeReference(id); else state.selected.add(id); renderAssets(); renderAttachments(); toast(state.selected.size ? `已选择 ${state.selected.size} 份参考，可返回工作台创作` : '已取消引用'); });
   $$('[data-sync]').forEach(button => button.onclick = async () => {
     button.disabled = true;
     try {
@@ -1241,8 +1501,11 @@ function renderAssets() {
 async function refreshAssets() {
   const version = ++assetRefreshVersion;
   const knownIds = new Set(state.assets.map(item => item.id));
-  const { items } = await api('/api/assets');
+  let items;
+  try { ({ items } = await api('/api/assets')); }
+  catch (error) { if (version === assetRefreshVersion) { state.assetsError = error.message; renderMentions(); } throw error; }
   if (version !== assetRefreshVersion) return;
+  state.assetsLoaded = true; state.assetsError = '';
   const fetchedIds = new Set(items.map(item => item.id));
   // Keep uploads completed after this list request started.
   state.assets = [...state.assets.filter(item => !knownIds.has(item.id) && !fetchedIds.has(item.id)), ...items];

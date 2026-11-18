@@ -10,7 +10,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%232a2d25'/%3E%3Cpath d='m10 11 10 18 10-18h-6l-4 9-4-9z' fill='%23dbe6be'/%3E%3C/svg%3E">
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <script src="/app.js" type="module"></script>
 </head>
 <body>
   <svg class="icon-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
@@ -148,6 +148,11 @@
   </dialog>
   <dialog id="goalDialog" class="goal-dialog"><form id="goalForm"><div class="dialog-heading"><span class="eyebrow">PERSISTENT GOAL</span><button type="button" id="closeGoal" aria-label="关闭目标设置">×</button></div><h2>让 Agent 持续推进</h2><p>目标会随会话保存。每轮结束后继续推进，直到完成、需要你处理，或达到预算。</p><label>你想完成什么？<textarea id="goalObjective" rows="4" placeholder="描述最终结果和验收标准…" required></textarea></label><label>Token 预算（可选）<input id="goalBudget" type="number" min="1" max="10000000" step="1" placeholder="不设置额外预算"></label><p class="goal-budget-note">按云端累计用量核算，在轮次边界检查；单轮可能超出预算。不设预算时会持续推进，直到目标完成、暂停或需要你处理。</p><button type="submit" id="saveGoal" class="upload-action">设置并推进目标 ↗</button></form></dialog>
   <dialog id="threadDialog"><form id="threadForm"><div class="dialog-heading"><span class="eyebrow">CONVERSATION</span><button type="button" id="closeThread" aria-label="关闭会话管理">×</button></div><h2>管理会话</h2><label>会话名称<input id="threadTitle" maxlength="120" required></label><div class="thread-actions"><button type="submit" class="text-button">保存名称</button><button type="button" id="pinThread" class="text-button">置顶</button><button type="button" id="archiveThread" class="text-button">归档</button><button type="button" id="deleteThread" class="text-button danger">删除本机会话</button></div><p>删除本机记录不会删除云端 Session 或文件。</p></form></dialog>
+  <dialog id="mediaPreviewDialog" class="media-preview-dialog" aria-labelledby="mediaPreviewTitle" aria-describedby="mediaPreviewHint">
+    <header class="media-preview-header"><div><span id="mediaPreviewCount" class="media-preview-count" aria-live="polite"></span><h2 id="mediaPreviewTitle"></h2></div><button type="button" id="closeMediaPreview" class="media-preview-control" aria-label="关闭预览" title="关闭预览 · Esc" autofocus><svg class="icon"><use href="#i-close"/></svg></button></header>
+    <div class="media-preview-stage" id="mediaPreviewStage"><div id="mediaPreviewContent" class="media-preview-content"></div><div id="mediaPreviewStatus" class="media-preview-status" role="status"></div><button type="button" id="previousMediaPreview" class="media-preview-control media-preview-previous" aria-label="上一项" title="上一项 · ←">‹</button><button type="button" id="nextMediaPreview" class="media-preview-control media-preview-next" aria-label="下一项" title="下一项 · →">›</button></div>
+    <footer class="media-preview-footer"><span id="mediaPreviewHint">← → 切换 · Esc 关闭</span><a id="mediaPreviewOriginal" target="_blank" rel="noopener noreferrer">打开原文件 ↗</a></footer>
+  </dialog>
   <div id="toast" class="toast hidden" role="status"></div>
 </body>
 </html>

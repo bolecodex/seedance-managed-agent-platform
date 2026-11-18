@@ -39,6 +39,7 @@ const contentTypes = {
 const staticFiles = {
   '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/theme.js': ['theme.js', 'text/javascript; charset=utf-8'],
+  '/mentions.js': ['mentions.js', 'text/javascript; charset=utf-8'],
   '/portrait-callback/': ['portrait-callback/index.html', 'text/html; charset=utf-8'],
   '/portrait-callback/index.html': ['portrait-callback/index.html', 'text/html; charset=utf-8'],
   '/portrait-callback/callback.css': ['portrait-callback/callback.css', 'text/css; charset=utf-8'],
